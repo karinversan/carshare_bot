@@ -1,0 +1,71 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Secrets / local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.cache/
+.venv/
+venv/
+*.egg-info/
+.eggs/
+
+# Frontend / Node
+node_modules/
+dist/
+build/
+.vite/
+coverage/
+*.tsbuildinfo
+
+# Jupyter / experiment tracking
+.ipynb_checkpoints/
+mlruns/
+wandb/
+notebooks/mlruns/
+
+# Runtime / local temp files
+*.log
+*.pid
+*.db
+*.sqlite
+*.sqlite3
+tmp/
+temp/
+.tmp_upload_test.jpg
+
+# ML data and generated artifacts
+ml/data/
+ml/**/weights/
+ml/**/runs/
+ml/**/reports/*.json
+notebooks/*.pt
+notebooks/*.pth
+notebooks/*.ckpt
+notebooks/*.onnx
+notebooks/*.bin
+notebooks/*.joblib
+notebooks/*.pkl
+
+# Local tool state
+.claude/
