@@ -1,0 +1,185 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: car_inspection
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports: ["5432:5432"]
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-minioadmin}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set myminio http://minio:9000 $${S3_ACCESS_KEY:-minioadmin} $${S3_SECRET_KEY:-minioadmin};
+      mc mb --ignore-existing myminio/raw-images;
+      mc mb --ignore-existing myminio/processed-images;
+      mc mb --ignore-existing myminio/overlays;
+      mc mb --ignore-existing myminio/closeups;
+      mc mb --ignore-existing myminio/reports;
+      mc mb --ignore-existing myminio/ml-artifacts;
+      echo 'Buckets created successfully';
+      "
+    environment:
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.14.3
+    command: mlflow server --host 0.0.0.0 --port 5000
+    ports: ["5000:5000"]
+
+  api-service:
+    build:
+      context: ../..
+      dockerfile: infra/docker/api-service.Dockerfile
+    env_file:
+      - ../../.env.example
+    environment:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/car_inspection
+      SYNC_DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/car_inspection
+      REDIS_URL: redis://redis:6379/0
+      S3_ENDPOINT_URL: http://minio:9000
+      INFERENCE_SERVICE_URL: http://inference-service:8010
+    command: uvicorn apps.api_service.app.main:app --host 0.0.0.0 --port 8000
+    ports: ["8000:8000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      inference-service:
+        condition: service_started
+
+  bot-service:
+    build:
+      context: ../..
+      dockerfile: infra/docker/bot-service.Dockerfile
+    env_file:
+      - ../../.env.example
+    environment:
+      API_SERVICE_URL: http://api-service:8000
+    command: uvicorn apps.bot_service.app.main:app --host 0.0.0.0 --port 8001
+    ports: ["8001:8001"]
+    depends_on:
+      api-service:
+        condition: service_started
+
+  worker-service:
+    build:
+      context: ../..
+      dockerfile: infra/docker/worker-service.Dockerfile
+    env_file:
+      - ../../.env.example
+    environment:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/car_inspection
+      SYNC_DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/car_inspection
+      REDIS_URL: redis://redis:6379/0
+      S3_ENDPOINT_URL: http://minio:9000
+      INFERENCE_SERVICE_URL: http://inference-service:8010
+    command: celery -A apps.worker_service.app.celery_app.celery_app worker --loglevel=INFO
+    depends_on:
+      api-service:
+        condition: service_started
+      redis:
+        condition: service_healthy
+
+  inference-service:
+    build:
+      context: ../..
+      dockerfile: infra/docker/inference-service.Dockerfile
+    env_file:
+      - ../../.env.example
+    command: uvicorn services.inference_service.app.main:app --host 0.0.0.0 --port 8010
+    ports: ["8010:8010"]
+
+  miniapp-frontend:
+    image: node:20
+    working_dir: /app
+    volumes:
+      - ../../apps/miniapp-frontend:/app
+    environment:
+      # Browser-accessible URL (not Docker internal) — frontend runs in user's browser
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    ports: ["5173:5173"]
+    depends_on:
+      api-service:
+        condition: service_started
+
+  admin-panel:
+    image: node:20
+    working_dir: /app
+    volumes:
+      - ../../apps/admin-panel:/app
+    environment:
+      # Browser-accessible URL (not Docker internal) — frontend runs in user's browser
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    ports: ["5174:5174"]
+    depends_on:
+      api-service:
+        condition: service_started
+
+  airflow-webserver:
+    image: apache/airflow:2.9.3
+    environment:
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__EXECUTOR: SequentialExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: sqlite:////opt/airflow/airflow.db
+    volumes:
+      - ../../airflow/dags:/opt/airflow/dags
+    command: bash -c "airflow db init && airflow webserver"
+    ports: ["8080:8080"]
+
+  airflow-scheduler:
+    image: apache/airflow:2.9.3
+    environment:
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__EXECUTOR: SequentialExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: sqlite:////opt/airflow/airflow.db
+    volumes:
+      - ../../airflow/dags:/opt/airflow/dags
+    command: bash -c "airflow db init && airflow scheduler"
+
+volumes:
+  postgres_data:
+  minio_data:
