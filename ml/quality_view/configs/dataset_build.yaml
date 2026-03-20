@@ -1,0 +1,28 @@
+{
+  "split": {
+    "train": 0.7,
+    "val": 0.15,
+    "test": 0.15
+  },
+  "view": {
+    "target_per_class": 2200,
+    "other_invalid_target": 2200,
+    "max_user_invalid": 1200,
+    "max_crop_invalid": 2200,
+    "angled_crop_fraction": 0.18,
+    "image_size": 256
+  },
+  "quality": {
+    "max_base_images": 3000,
+    "target_accept_total": 5200,
+    "target_reject_total": 5200,
+    "image_size": 256,
+    "accept_threshold": 0.55,
+    "reject_threshold": 1.0,
+    "weak_single_threshold": 0.45,
+    "strong_single_threshold": 0.78
+  },
+  "download": {
+    "download_kadid_reference": false
+  }
+}

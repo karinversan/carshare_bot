@@ -1,0 +1,14 @@
+experiment_name: qv_effb0_v1
+seed: 42
+model:
+  backbone: efficientnet_b0
+  pretrained: true
+data:
+  image_size: 384
+  batch_size: 32
+  num_workers: 4
+trainer:
+  epochs: 30
+  early_stopping_patience: 5
+logging:
+  wandb_project: car-inspection-quality-view
