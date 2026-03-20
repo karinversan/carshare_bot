@@ -1,0 +1,4 @@
+diff_version: v1
+thresholds:
+  strong_match: 0.65
+  weak_match: 0.45
