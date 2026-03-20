@@ -1,0 +1,16 @@
+experiment_name: damage_yolo_seg_v1
+seed: 42
+model:
+  architecture: yolo_seg
+  pretrained_checkpoint: yolov8s-seg.pt
+data:
+  image_size: 1024
+  batch_size: 12
+trainer:
+  epochs: 80
+  patience: 10
+  best_metric: metrics/mAP50(M)
+logging:
+  wandb_project: car-inspection-damage-seg
+registry:
+  mlflow_model_name: damage_seg

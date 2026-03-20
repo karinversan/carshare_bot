@@ -1,0 +1,17 @@
+{
+  "seed": 42,
+  "balance_mode": "capped",
+  "positive_class_cap_ratio": 1.5,
+  "negative_full_ratio": 0,
+  "negative_crop_ratio": 0,
+  "compcars_split": {
+    "train": 0.7,
+    "val": 0.15,
+    "test": 0.15
+  },
+  "crop": {
+    "min_fraction": 0.45,
+    "max_fraction": 0.75,
+    "min_side": 224
+  }
+}
