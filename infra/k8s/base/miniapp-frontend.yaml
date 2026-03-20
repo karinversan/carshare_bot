@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: miniapp-frontend
+  namespace: car-inspection
+  labels:
+    app.kubernetes.io/name: miniapp-frontend
+    app.kubernetes.io/part-of: car-inspection-assistant
+    app.kubernetes.io/component: frontend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: miniapp-frontend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: miniapp-frontend
+        app.kubernetes.io/part-of: car-inspection-assistant
+        app.kubernetes.io/component: frontend
+    spec:
+      containers:
+        - name: miniapp-frontend
+          image: car-inspection/miniapp-frontend:latest
+          ports:
+            - containerPort: 5173
+              name: http
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 5173
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 5173
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: miniapp-frontend
+  namespace: car-inspection
+  labels:
+    app.kubernetes.io/name: miniapp-frontend
+    app.kubernetes.io/part-of: car-inspection-assistant
+    app.kubernetes.io/component: frontend
+spec:
+  selector:
+    app.kubernetes.io/name: miniapp-frontend
+  ports:
+    - port: 5173
+      targetPort: 5173
+      protocol: TCP
+      name: http

@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: car-inspection
+  labels:
+    app.kubernetes.io/part-of: car-inspection-assistant
+    app.kubernetes.io/managed-by: kubectl

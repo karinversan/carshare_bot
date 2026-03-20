@@ -1,0 +1,45 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: car-inspection-ingress
+  namespace: car-inspection
+  labels:
+    app.kubernetes.io/part-of: car-inspection-assistant
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "120"
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          - path: /api(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: api-service
+                port:
+                  number: 8000
+          - path: /admin(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: admin-panel
+                port:
+                  number: 5174
+          - path: /bot(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: bot-service
+                port:
+                  number: 8001
+          - path: /(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: miniapp-frontend
+                port:
+                  number: 5173
