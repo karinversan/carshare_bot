@@ -33,8 +33,21 @@ def serve_object(bucket: str, object_key: str):
             raise HTTPException(status_code=404, detail="object not found") from exc
         raise HTTPException(status_code=502, detail="storage unavailable") from exc
 
+    guessed_media_type = mimetypes.guess_type(normalized_key)[0]
+    if guessed_media_type is None and "." in normalized_key:
+        ext = normalized_key.rsplit(".", 1)[-1].lower()
+        guessed_media_type = {
+            "jpg": "image/jpeg",
+            "jpeg": "image/jpeg",
+            "png": "image/png",
+            "webp": "image/webp",
+            "gif": "image/gif",
+            "bmp": "image/bmp",
+            "svg": "image/svg+xml",
+            "avif": "image/avif",
+        }.get(ext)
     return Response(
         content=payload,
-        media_type=content_type or mimetypes.guess_type(normalized_key)[0] or "application/octet-stream",
+        media_type=guessed_media_type or content_type or "application/octet-stream",
         headers={"Cache-Control": "public, max-age=300"},
     )

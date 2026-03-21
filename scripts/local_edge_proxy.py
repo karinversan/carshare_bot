@@ -9,7 +9,7 @@ import json
 
 FRONTEND_BASE = os.getenv("MINIAPP_FRONTEND_BASE", "http://127.0.0.1:5173")
 ADMIN_BASE = os.getenv("ADMIN_FRONTEND_BASE", "http://127.0.0.1:5174")
-API_BASE = os.getenv("EDGE_API_BASE", "http://127.0.0.1:8100")
+API_BASE = os.getenv("EDGE_API_BASE", "http://127.0.0.1:8000")
 BOT_BASE = os.getenv("EDGE_BOT_BASE", "http://127.0.0.1:8001")
 
 HOP_BY_HOP_HEADERS = {

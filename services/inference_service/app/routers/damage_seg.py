@@ -12,6 +12,10 @@ import uuid
 
 import numpy as np
 from fastapi import APIRouter, UploadFile, File, Form
+try:
+    import cv2
+except ModuleNotFoundError:  # pragma: no cover - optional in slim envs
+    cv2 = None
 
 from services.inference_service.app.core.config import settings
 from services.inference_service.app.model_registry import get_seg_model
@@ -41,6 +45,8 @@ _DAMAGE_CLASS_ALIASES = {
     "broken-part": "broken_part",
     "сломанная_деталь": "broken_part",
     "сломанная_часть": "broken_part",
+    "glass_shatter": "crack",
+    "shattered_glass": "crack",
 }
 
 
@@ -56,10 +62,15 @@ def _predict_real(image_pil, slot_code: str) -> dict:
 
     damage_classes = meta.get("damage_classes", DAMAGE_CLASSES)
     conf_thresh = settings.damage_seg_confidence_threshold
-    post_conf_thresh = max(settings.damage_seg_post_filter_confidence, conf_thresh)
+    # Hide very low-confidence detections to avoid UI noise and false positives.
+    post_conf_thresh = max(settings.damage_seg_post_filter_confidence, conf_thresh, 0.2)
     min_area = settings.damage_seg_min_area_norm
-    max_area = settings.damage_seg_max_area_norm
+    # Allow larger contiguous damage regions (major impacts may exceed 0.35 of frame area).
+    max_area = max(settings.damage_seg_max_area_norm, 0.8)
     run_id = str(uuid.uuid4())
+
+    # Request low-conf raw candidates from YOLO and apply business thresholds below.
+    model_conf_thresh = min(conf_thresh, 0.01)
 
     try:
         # Determine device
@@ -77,7 +88,7 @@ def _predict_real(image_pil, slot_code: str) -> dict:
             source=image_pil,
             device=device_str,
             imgsz=settings.damage_seg_inference_imgsz,
-            conf=conf_thresh,
+            conf=model_conf_thresh,
             verbose=False,
         )
     except RuntimeError as e:
@@ -85,7 +96,7 @@ def _predict_real(image_pil, slot_code: str) -> dict:
             logger.warning("MPS failed, falling back to CPU: %s", e)
             results = model.predict(
                 source=image_pil, device="cpu", imgsz=settings.damage_seg_inference_imgsz,
-                conf=conf_thresh, verbose=False,
+                conf=model_conf_thresh, verbose=False,
             )
         else:
             raise
@@ -94,8 +105,14 @@ def _predict_real(image_pil, slot_code: str) -> dict:
     img_w, img_h = image_pil.size
     damages = []
     mask_polygons = None
+    mask_data = None
     if getattr(result, "masks", None) is not None and getattr(result.masks, "xy", None) is not None:
         mask_polygons = result.masks.xy
+    if getattr(result, "masks", None) is not None and getattr(result.masks, "data", None) is not None:
+        try:
+            mask_data = result.masks.data.cpu().numpy()
+        except Exception:  # pragma: no cover - defensive fallback
+            mask_data = None
 
     # Extract detections
     if result.boxes is not None and len(result.boxes) > 0:
@@ -122,17 +139,36 @@ def _predict_real(image_pil, slot_code: str) -> dict:
             centroid_x = round((x1 + x2) / 2, 4)
             centroid_y = round((y1 + y2) / 2, 4)
             area_norm = round((x2 - x1) * (y2 - y1), 6)
-            if confidence < post_conf_thresh:
-                continue
-            if area_norm < min_area or area_norm > max_area:
-                continue
-
             # Extract polygon from segmentation mask if available
             polygon_json = None
             mask_rle = None
-            polygon_source = "bbox_fallback"
+            polygon_source = ""
 
-            if mask_polygons is not None and i < len(mask_polygons):
+            if mask_data is not None and i < len(mask_data) and cv2 is not None:
+                try:
+                    raw_mask = mask_data[i]
+                    if raw_mask.ndim == 3:
+                        raw_mask = raw_mask[0]
+                    mask_bin = (raw_mask > 0.5).astype(np.uint8)
+                    if mask_bin.shape[1] != img_w or mask_bin.shape[0] != img_h:
+                        mask_bin = cv2.resize(mask_bin, (img_w, img_h), interpolation=cv2.INTER_NEAREST)
+                    contours, _ = cv2.findContours(mask_bin, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    if contours:
+                        contour = max(contours, key=cv2.contourArea)
+                        if len(contour) >= 3:
+                            epsilon = 0.003 * cv2.arcLength(contour, True)
+                            approx = cv2.approxPolyDP(contour, epsilon, True)
+                            pts = approx.reshape(-1, 2)
+                            if len(pts) >= 3:
+                                polygon_json = [
+                                    [round(float(p[0]) / img_w, 6), round(float(p[1]) / img_h, 6)]
+                                    for p in pts
+                                ]
+                                polygon_source = "seg_mask_contour"
+                except Exception:
+                    polygon_json = None
+
+            if polygon_json is None and mask_polygons is not None and i < len(mask_polygons):
                 # Ultralytics provides one polygon array per detected mask.
                 poly_px = mask_polygons[i]
                 if hasattr(poly_px, "cpu"):
@@ -150,9 +186,8 @@ def _predict_real(image_pil, slot_code: str) -> dict:
                     polygon_source = "seg_mask"
 
                     # Simplify polygon if too many points (for JSON efficiency)
-                    if len(polygon_json) > 50:
+                    if len(polygon_json) > 50 and cv2 is not None:
                         try:
-                            import cv2
                             pts_arr = np.array(poly_px, dtype=np.float32).reshape(-1, 1, 2)
                             epsilon = 0.005 * cv2.arcLength(pts_arr, True)
                             approx = cv2.approxPolyDP(pts_arr, epsilon, True)
@@ -165,12 +200,10 @@ def _predict_real(image_pil, slot_code: str) -> dict:
                             pass  # keep original
 
             if polygon_json is None:
-                # Fallback: use bbox as polygon
-                polygon_json = [
-                    [x1, y1], [x2, y1], [x2, y2], [x1, y2],
-                ]
+                # Segmentation endpoint must return mask-derived polygons only.
+                continue
 
-            damages.append({
+            instance = {
                 "damage_type": _normalize_damage_type(damage_classes[cls_idx]),
                 "confidence": round(confidence, 3),
                 "bbox_norm": bbox_norm,
@@ -180,7 +213,12 @@ def _predict_real(image_pil, slot_code: str) -> dict:
                 "polygon_json": polygon_json,
                 "mask_rle": mask_rle,
                 "polygon_source": polygon_source,
-            })
+            }
+            if confidence < post_conf_thresh:
+                continue
+            if area_norm < min_area or area_norm > max_area:
+                continue
+            damages.append(instance)
 
     overlay = overlay_png_b64(image_pil, damages) if damages else None
 

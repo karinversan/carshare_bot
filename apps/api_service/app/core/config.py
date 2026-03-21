@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     s3_bucket_ml_artifacts: str = "ml-artifacts"
 
     inference_service_url: str = "http://localhost:8010"
+    require_real_inference: bool = True
     public_web_base_url: str = "http://localhost:5173"
 
     jwt_secret: str = "supersecret"

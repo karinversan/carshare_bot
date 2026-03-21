@@ -108,6 +108,34 @@ def _view_mismatch_threshold(expected_slot: str, predicted_view_raw: str | None)
     return settings.viewpoint_mismatch_threshold
 
 
+def _expected_view_group(expected_slot: str) -> str:
+    if expected_slot in {"left_side", "right_side"}:
+        return "side"
+    return expected_slot
+
+
+def _predicted_view_group(predicted_view_raw: str | None) -> str | None:
+    predicted_view_raw = _normalize_view_label(predicted_view_raw)
+    if predicted_view_raw is None:
+        return None
+    if predicted_view_raw in INVALID_VIEW_LABELS:
+        return "invalid"
+
+    predicted_slot = canonical_slot(predicted_view_raw)
+    if predicted_slot in {"left_side", "right_side"} or predicted_view_raw == "side_valid":
+        return "side"
+    if predicted_slot in {"front", "rear"}:
+        return predicted_slot
+    return predicted_slot
+
+
+def _is_directional_view_mismatch(expected_slot: str, predicted_view_raw: str | None) -> bool:
+    predicted_group = _predicted_view_group(predicted_view_raw)
+    if predicted_group not in {"front", "rear", "side"}:
+        return False
+    return predicted_group != _expected_view_group(expected_slot)
+
+
 def _should_reject_view_mismatch(expected_slot: str, predicted_view_raw: str | None, view_score: float, threshold: float) -> bool:
     predicted_view_raw = _normalize_view_label(predicted_view_raw)
     if predicted_view_raw is None:
@@ -136,12 +164,12 @@ def _view_matches_expected(expected_slot: str, predicted_view_raw: str | None) -
 
 
 def _front_rear_confusion_override(expected_slot: str, predicted_view_raw: str | None, view_score: float, threshold: float, symmetry_score: float) -> bool:
-    predicted_view_raw = _normalize_view_label(predicted_view_raw)
     if expected_slot not in {"front", "rear"}:
         return False
-    if predicted_view_raw not in {"front_valid", "rear_valid"}:
+    predicted_group = _predicted_view_group(predicted_view_raw)
+    if predicted_group not in {"front", "rear"}:
         return False
-    if _view_matches_expected(expected_slot, predicted_view_raw):
+    if predicted_group == _expected_view_group(expected_slot):
         return False
     if view_score >= threshold:
         return False
@@ -251,10 +279,12 @@ def _predict_real(image_pil, expected_slot: str) -> dict:
     # 2) Viewpoint mismatch: predicted view != expected with decent confidence
     base_view_threshold = float(trained_view_threshold) if trained_view_threshold is not None else settings.viewpoint_mismatch_threshold
     view_reject_threshold = max(base_view_threshold, _view_mismatch_threshold(expected_slot, predicted_view_raw))
+    directional_view_mismatch = _is_directional_view_mismatch(expected_slot, predicted_view_raw)
+    invalid_view_prediction = predicted_view_raw in INVALID_VIEW_LABELS
 
     if settings.quality_view_disable_viewpoint_check:
         predicted_view = expected_slot
-    elif accepted and _should_reject_view_mismatch(expected_slot, predicted_view_raw, view_score, view_reject_threshold):
+    elif accepted and not _view_matches_expected(expected_slot, predicted_view_raw):
         if _front_rear_confusion_override(expected_slot, predicted_view_raw, view_score, view_reject_threshold, symmetry_score):
             predicted_view = f"{expected_slot}_valid"
             logger.info(
@@ -265,7 +295,11 @@ def _predict_real(image_pil, expected_slot: str) -> dict:
                 view_reject_threshold,
                 symmetry_score,
             )
-        else:
+        elif (
+            directional_view_mismatch
+            or invalid_view_prediction
+            or _should_reject_view_mismatch(expected_slot, predicted_view_raw, view_score, view_reject_threshold)
+        ):
             accepted = False
             rejection_reason = f"wrong_viewpoint: expected {expected_slot}, got {predicted_view_raw}"
             logger.info(

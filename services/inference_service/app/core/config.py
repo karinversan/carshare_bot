@@ -38,15 +38,48 @@ class Settings(BaseSettings):
         has_ultralytics = find_spec("ultralytics") is not None
         deps_ready = has_torch and has_ultralytics
 
-        weight_path = (self.damage_seg_weights_path or "").strip()
-        weight_file_exists = bool(weight_path) and Path(weight_path).exists()
+        project_root = Path(__file__).resolve().parents[4]
+        damage_weights_dir = project_root / "ml" / "damage_seg" / "weights"
+        fallback_damage_weights = [
+            damage_weights_dir / "best_damage_seg.pt",
+            damage_weights_dir / "best_damage_seg_full_baseline_mps.pt",
+        ]
+        configured_weight_path = (self.damage_seg_weights_path or "").strip()
+        configured_weight_file = Path(configured_weight_path).expanduser() if configured_weight_path else None
+
+        resolved_weight_file: Path | None = None
+        if configured_weight_file:
+            if configured_weight_file.exists():
+                resolved_weight_file = configured_weight_file
+            else:
+                # Support Docker runtime where env may point to host path.
+                # If file with same basename is present in project weights dir, use it.
+                local_name_candidates = [
+                    damage_weights_dir / configured_weight_file.name,
+                    damage_weights_dir / "external" / configured_weight_file.name,
+                ]
+                for candidate in local_name_candidates:
+                    if candidate.exists():
+                        resolved_weight_file = candidate
+                        break
+
+        if resolved_weight_file is None:
+            for candidate in fallback_damage_weights:
+                if candidate.exists():
+                    resolved_weight_file = candidate
+                    break
+
+        if resolved_weight_file is not None:
+            self.damage_seg_weights_path = str(resolved_weight_file)
+
+        weight_file_exists = resolved_weight_file is not None
 
         # "weights" mode should not crash service startup on slim/docker envs
         # where torch stack is intentionally absent.
         if self.inference_backend == "weights":
             if not deps_ready:
                 self.inference_backend = "mock"
-            elif weight_path and not weight_file_exists:
+            elif configured_weight_path and not weight_file_exists:
                 self.inference_backend = "mock"
             return self
 

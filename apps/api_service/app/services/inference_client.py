@@ -16,8 +16,14 @@ class InferenceClient:
         self.base_url = settings.inference_service_url.rstrip("/")
 
     def _base_candidates(self) -> list[str]:
-        candidates: list[str] = []
+        candidates: list[str] = [
+            self.base_url,
+            "http://inference-service:8010",
+            "http://infra-inference-service-1:8010",
+        ]
         if settings.app_env == "dev":
+            # Legacy fallbacks are kept last to avoid slowing down requests when the
+            # primary in-network inference endpoint is healthy.
             candidates.extend(
                 [
                     "http://host.docker.internal:8011",
@@ -25,13 +31,6 @@ class InferenceClient:
                     "http://localhost:8011",
                 ]
             )
-        candidates.extend(
-            [
-                self.base_url,
-                "http://inference-service:8010",
-                "http://infra-inference-service-1:8010",
-            ]
-        )
         unique: list[str] = []
         for base in candidates:
             base = base.rstrip("/")
@@ -39,9 +38,18 @@ class InferenceClient:
                 unique.append(base)
         return unique
 
-    def _post_with_fallback(self, path: str, *, files: dict, data: dict) -> dict:
+    def _post_with_fallback(
+        self,
+        path: str,
+        *,
+        files: dict,
+        data: dict,
+        allow_mock_fallback: bool = False,
+    ) -> dict:
+        effective_allow_mock_fallback = allow_mock_fallback and (not settings.require_real_inference)
         last_connect_exc: Exception | None = None
         last_http_error: Exception | None = None
+        fallback_mock_payload: dict | None = None
         with httpx.Client(timeout=60.0) as client:
             for base in self._base_candidates():
                 url = f"{base}{path}"
@@ -60,10 +68,26 @@ class InferenceClient:
                         )
                         continue
                     resp.raise_for_status()
+                    payload = resp.json()
+                    model_backend = str(payload.get("model_backend") or "").lower()
+                    if (
+                        settings.require_real_inference
+                        and model_backend == "mock"
+                    ):
+                        if effective_allow_mock_fallback and fallback_mock_payload is None:
+                            fallback_mock_payload = payload
+                        logger.warning(
+                            "Inference upstream %s responded with mock backend while real inference is required",
+                            base,
+                        )
+                        last_http_error = InferenceServiceError(
+                            f"Mock inference backend from {base} is not allowed"
+                        )
+                        continue
                     if base != self.base_url:
                         logger.warning("Inference base URL fallback: %s -> %s", self.base_url, base)
                         self.base_url = base
-                    return resp.json()
+                    return payload
                 except (httpx.ConnectError, httpx.TimeoutException) as exc:
                     logger.warning("Inference connect/timeout via %s: %s", base, exc)
                     last_connect_exc = exc
@@ -74,7 +98,16 @@ class InferenceClient:
                         f"Inference service returned HTTP {exc.response.status_code}"
                     ) from exc
 
+        if effective_allow_mock_fallback and fallback_mock_payload is not None:
+            logger.warning(
+                "Returning mock inference response for %s because no real inference backend was reachable",
+                path,
+            )
+            return fallback_mock_payload
+
         if last_http_error:
+            if isinstance(last_http_error, InferenceServiceError):
+                raise last_http_error
             raise InferenceServiceError(str(last_http_error)) from last_http_error
         if last_connect_exc:
             raise InferenceServiceError(f"Inference service unavailable: {last_connect_exc}") from last_connect_exc
@@ -84,7 +117,12 @@ class InferenceClient:
         files = {"file": (filename, image_bytes, "image/jpeg")}
         data = {"expected_slot": expected_slot}
         try:
-            return self._post_with_fallback("/v1/quality-view/predict", files=files, data=data)
+            return self._post_with_fallback(
+                "/v1/quality-view/predict",
+                files=files,
+                data=data,
+                allow_mock_fallback=True,
+            )
         except InferenceServiceError:
             raise
 
@@ -92,7 +130,12 @@ class InferenceClient:
         files = {"file": (filename, image_bytes, "image/jpeg")}
         data = {"slot_code": slot_code}
         try:
-            return self._post_with_fallback("/v1/damage-seg/predict", files=files, data=data)
+            return self._post_with_fallback(
+                "/v1/damage-seg/predict",
+                files=files,
+                data=data,
+                allow_mock_fallback=settings.app_env == "dev",
+            )
         except InferenceServiceError:
             raise
 
