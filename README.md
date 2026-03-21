@@ -33,87 +33,105 @@ An end-to-end demo of a rental-driven car inspection product. The project combin
 
 ---
 
-## Prediction examples
+## Prediction examples (real mobile run)
 
 <table>
   <tr>
     <td align="center">
-      <img src="docs/screenshots/prediction-accepted.png" width="320" alt="Accepted capture" /><br/>
-      <sub>Accepted capture: correct slot and acceptable quality</sub>
+      <img src="docs/screenshots/miniapp_rear_slot_accepted_no_damage.png" width="320" alt="Rear slot accepted without damages" /><br/>
+      <sub>Accepted rear slot: no damage findings on this angle</sub>
     </td>
     <td align="center">
-      <img src="docs/screenshots/prediction-quality-reject.png" width="320" alt="Rejected quality" /><br/>
-      <sub>Rejected capture: unsuitable photo quality</sub>
+      <img src="docs/screenshots/miniapp_rear_slot_accepted_launch_damage_analysis.png" width="320" alt="Damage analysis launch confirmation" /><br/>
+      <sub>Confirmed photo set: explicit start of damage segmentation</sub>
     </td>
   </tr>
   <tr>
     <td align="center">
-      <img src="docs/screenshots/prediction-view-mismatch.png" width="320" alt="Wrong viewpoint" /><br/>
-      <sub>Rejected capture: wrong viewpoint for the expected slot</sub>
+      <img src="docs/screenshots/miniapp_damage_segmentation_masks_autoconfirmed.png" width="320" alt="Mask-based segmentation result" /><br/>
+      <sub>Mask overlays and confidence-based auto-accept decisions</sub>
     </td>
     <td align="center">
-      <img src="docs/screenshots/prediction-segmentation.png" width="320" alt="Damage segmentation" /><br/>
-      <sub>Damage segmentation: polygons, classes and confidence scores</sub>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" colspan="2">
-      <img src="docs/screenshots/prediction-classification.png" width="620" alt="Finding classification and review states" /><br/>
-      <sub>Finding classification and review states: autoconfirmed, uncertain and filtered results</sub>
+      <img src="docs/screenshots/bot_post_inspection_trip_finished_admin_case.png" width="320" alt="Post-inspection summary in bot" /><br/>
+      <sub>Post-inspection result: trip summary and admin-review status</sub>
     </td>
   </tr>
 </table>
 
 Typical outcomes shown by the current pipeline:
 
-- **accepted capture**: `quality_label=good`, predicted view matches the expected slot, the frame goes to damage inference;
-- **unsuitable photo**: the quality gate can reject `too_blurry`, `too_dark`, or `overexposed` frames;
-- **wrong viewpoint**: the frame can be rejected even with acceptable quality if `predicted_view` does not match `expected_slot`;
-- **damage segmentation**: the service returns polygons, boxes, confidence, overlay image, and damage classes such as `scratch`, `dent`, `crack`, `broken_part`;
-- **review classification**: predicted damages can be auto-confirmed, sent to admin review, or filtered out depending on confidence and review rules.
+- **accepted slot without findings**: the required angle is accepted and shown as complete for the user;
+- **explicit analysis gate**: segmentation does not run until the user confirms the assembled photo set;
+- **mask-based segmentation**: UI displays contour masks and confidence scores for each detected damage;
+- **post-inspection transition**: bot switches from inspection script to trip summary + resolution state.
 
 ---
 
-## Interface walkthrough
+## Interface walkthrough (screens from latest run)
 
 <table>
   <tr>
     <td align="center">
-      <img src="docs/screenshots/bot-entry.png" width="220" alt="Telegram bot entry" /><br/>
-      <sub>Telegram entry</sub>
+      <img src="docs/screenshots/bot_start_ready_to_drive_return_flow.png" width="220" alt="Bot start and entry prompt" /><br/>
+      <sub>Bot start: ready-to-drive prompt</sub>
     </td>
     <td align="center">
-      <img src="docs/screenshots/miniapp-capture.png" width="220" alt="Mini App guided capture" /><br/>
-      <sub>Guided capture</sub>
-    </td>
-  </tr>
-  <tr>
-    <td align="center">
-      <img src="docs/screenshots/miniapp-grid.png" width="220" alt="Required views ready" /><br/>
-      <sub>Required views ready</sub>
-    </td>
-    <td align="center">
-      <img src="docs/screenshots/miniapp-review.png" width="220" alt="Damage review" /><br/>
-      <sub>Damage review</sub>
+      <img src="docs/screenshots/bot_car_selected_mandatory_inspection.png" width="220" alt="Car selected and mandatory inspection prompt" /><br/>
+      <sub>Car selected: mandatory inspection CTA</sub>
     </td>
   </tr>
   <tr>
     <td align="center">
-      <img src="docs/screenshots/miniapp-closeups.png" width="220" alt="Manual review and closeups" /><br/>
-      <sub>Manual review and close-ups</sub>
+      <img src="docs/screenshots/miniapp_required_photos_progress_0_of_4.png" width="220" alt="Mini App required photos stage" /><br/>
+      <sub>Mini App: required photos stage (0/4)</sub>
     </td>
     <td align="center">
-      <img src="docs/screenshots/admin-queue.png" width="320" alt="Admin queue" /><br/>
-      <sub>Admin queue</sub>
+      <img src="docs/screenshots/miniapp_rear_slot_accepted_no_damage.png" width="220" alt="Rear slot accepted" /><br/>
+      <sub>Required slot accepted</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="docs/screenshots/miniapp_rear_slot_accepted_launch_damage_analysis.png" width="220" alt="Launch damage analysis step" /><br/>
+      <sub>Explicit launch of segmentation</sub>
+    </td>
+    <td align="center">
+      <img src="docs/screenshots/miniapp_damage_segmentation_masks_autoconfirmed.png" width="320" alt="Segmentation result with masks" /><br/>
+      <sub>Damage review with mask contours</sub>
     </td>
   </tr>
   <tr>
     <td align="center" colspan="2">
-      <img src="docs/screenshots/admin-case-detail.png" width="560" alt="Admin case detail" /><br/>
-      <sub>Case detail with evidence and resolution actions</sub>
+      <img src="docs/screenshots/bot_post_inspection_trip_finished_admin_case.png" width="560" alt="Final bot message after inspection completion" /><br/>
+      <sub>After completion: trip result, dispute/admin state, and return to main menu</sub>
     </td>
   </tr>
 </table>
+
+---
+
+## UX states from latest mobile run (Telegram + Mini App)
+
+The latest mobile screenshots (RU locale) show the real user-facing flow and copy, not only component mockups.  
+Below is the state-by-state breakdown captured during one end-to-end run.
+
+| Stage | What is visible on screen | Expected product behavior |
+|---|---|---|
+| Bot start (`/start`) | Card "Karin, готовы поехать?" + mandatory-photo guidance | User gets a clear next action and understands that inspection is required before continuing |
+| Car selected in bot | Vehicle card (`Volkswagen Polo`, route, ETA) + CTA "Выполнить осмотр" / "Открыть осмотр сдачи" | Bot keeps one primary action and syncs trip context before launching Mini App |
+| Mandatory capture entry | Mini App header "Обязательные фото", progress `0 из 4`, first slot card (`Перед`) | User sees required slots up-front: front, left side, right side, rear |
+| Slot accepted (example: rear) | Slot card status `ГОТОВО` / `ПРИНЯТО` with message "На этом ракурсе повреждения не найдены." | View validation and quality gate accept the angle and allow moving to next slot |
+| Segmentation start gate | Block "Запуск анализа повреждений" after photo-set confirmation | Additional photos are locked after confirmation; segmentation starts only by explicit user action |
+| Damage review result | Real mask polygons over body panel + cards `Царапина`, confidence (e.g. `89%`, `76%`), status `АВТОПРИНЯТО` | User sees interpretable evidence (mask contours, confidence, review status) rather than opaque scoring |
+| Post-inspection bot summary | Completion text (trip finished), dispute/admin-review status, CTA "Вернуться в главное меню" | Bot exits inspection script cleanly and returns user to stable main-menu state |
+| In-trip menu continuity | Bottom menu stays consistent (`Найти авто`, `Моя поездка`, `Качество моделей`, `Админка`, `Помощь`) | No duplicate message chains; navigation remains predictable during and after inspection |
+
+What these screenshots validate in product terms:
+
+- End-to-end transition is coherent: `bot -> mini app -> segmentation -> finalize -> bot summary`.
+- Back-flow and completion copy are localized and understandable for non-technical users.
+- Damage review is evidence-driven (mask overlays + confidence + status labels).
+- Return flow can branch to admin review/dispute while preserving a single recovery action to main menu.
 
 ---
 
