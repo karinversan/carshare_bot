@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import io
+import mimetypes
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -24,6 +25,11 @@ from packages.shared_py.car_inspection.enums import (
 )
 
 MAX_IMAGE_SIZE_BYTES = 20 * 1024 * 1024  # 20 MB
+OPTIONAL_PHOTO_STATUS = (
+    InspectionStatus.CAPTURING_OPTIONAL_PHOTOS.value
+    if hasattr(InspectionStatus, "CAPTURING_OPTIONAL_PHOTOS")
+    else "capturing_optional_photos"
+)
 
 
 def _utcnow() -> datetime:
@@ -33,6 +39,15 @@ def _utcnow() -> datetime:
 def _raw_image_key(inspection_id, slot_code, filename) -> str:
     suffix = filename.split(".")[-1] if "." in filename else "jpg"
     return f"{inspection_id}/{slot_code}/{uuid.uuid4()}.{suffix}"
+
+
+def _resolve_image_content_type(filename: str, content_type: str | None) -> str:
+    if content_type and content_type.startswith("image/"):
+        return content_type
+    guessed, _ = mimetypes.guess_type(filename)
+    if guessed and guessed.startswith("image/"):
+        return guessed
+    return "image/jpeg"
 
 
 def _image_hash(file_bytes: bytes) -> str:
@@ -257,6 +272,7 @@ def upload_inspection_image(
     image_type: str,
     slot_code: str | None,
     capture_order: int,
+    content_type: str | None = None,
 ):
     if len(file_bytes) > MAX_IMAGE_SIZE_BYTES:
         raise ValueError(f"Image too large: {len(file_bytes)} bytes (max {MAX_IMAGE_SIZE_BYTES})")
@@ -266,7 +282,8 @@ def upload_inspection_image(
     duplicate = _duplicate_image(db, inspection.id, phash)
 
     object_key = _raw_image_key(inspection.id, slot_code or "misc", filename)
-    storage_service.put_bytes(settings.s3_bucket_raw_images, object_key, file_bytes, "image/jpeg")
+    resolved_content_type = _resolve_image_content_type(filename, content_type)
+    storage_service.put_bytes(settings.s3_bucket_raw_images, object_key, file_bytes, resolved_content_type)
 
     row = models.InspectionImage(
         inspection_session_id=inspection.id,
@@ -320,7 +337,19 @@ def _sync_required_slot_progress(inspection: models.InspectionSession, expected_
     if expected_slot not in inspection.accepted_slots:
         inspection.accepted_slots = [*inspection.accepted_slots, expected_slot]
     if set(inspection.accepted_slots) == set(REQUIRED_SLOTS):
-        inspection.status = InspectionStatus.READY_FOR_INFERENCE.value
+        inspection.status = OPTIONAL_PHOTO_STATUS
+    else:
+        inspection.status = InspectionStatus.CAPTURING_REQUIRED_VIEWS.value
+
+
+def confirm_photo_set(inspection: models.InspectionSession) -> None:
+    if set(inspection.accepted_slots) != set(REQUIRED_SLOTS):
+        raise ValueError("All required views must be accepted before confirmation.")
+    if inspection.status == InspectionStatus.READY_FOR_INFERENCE.value:
+        return
+    if inspection.status != OPTIONAL_PHOTO_STATUS:
+        raise ValueError(f"Inspection is not ready for photo-set confirmation: {inspection.status}")
+    inspection.status = InspectionStatus.READY_FOR_INFERENCE.value
 
 
 def run_initial_checks(db: Session, inspection: models.InspectionSession, image_row: models.InspectionImage, expected_slot: str):
@@ -403,6 +432,8 @@ def _create_predicted_damage_rows(db: Session, inspection: models.InspectionSess
 
 
 def run_damage_inference(db: Session, inspection: models.InspectionSession):
+    if inspection.status != InspectionStatus.READY_FOR_INFERENCE.value:
+        raise ValueError(f"Inspection is not ready for damage inference: {inspection.status}")
     for image_row in _accepted_required_images(db, inspection.id):
         _clear_prediction_state_for_image(db, image_row)
         file_bytes = storage_service.get_bytes(settings.s3_bucket_raw_images, image_row.object_key_raw)
@@ -499,6 +530,11 @@ def _final_from_manual(inspection_id, manual, image):
 def finalize_inspection(db: Session, inspection: models.InspectionSession):
     if inspection.status == InspectionStatus.FINALIZED.value:
         raise ValueError("Inspection is already finalized. Cannot re-finalize.")
+    if inspection.status not in {
+        InspectionStatus.READY_FOR_REVIEW.value,
+        InspectionStatus.UNDER_REVIEW.value,
+    }:
+        raise ValueError(f"Inspection is not ready for finalize: {inspection.status}")
 
     _mark_pending_reviews_uncertain(db, inspection.id)
     _clear_final_state(db, inspection.id)

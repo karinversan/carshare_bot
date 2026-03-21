@@ -1,5 +1,7 @@
 import uuid
+import mimetypes
 from datetime import datetime, timezone
+from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, File, Form, UploadFile
 from sqlalchemy.orm import Session
 from sqlalchemy import select
@@ -9,6 +11,7 @@ from apps.api_service.app.db import models
 from apps.api_service.app.schemas.miniapp import DamageDecisionRequest, ManualDamageRequest
 from packages.shared_py.car_inspection.enums import ReviewStatus
 from packages.shared_py.car_inspection.enums import InspectionStatus
+from packages.shared_py.car_inspection.enums import DamageType
 from apps.api_service.app.services.storage_service import storage_service
 from apps.api_service.app.core.config import settings
 
@@ -20,12 +23,37 @@ CLOSED_INSPECTION_STATUSES = {
     InspectionStatus.CANCELLED.value,
     InspectionStatus.FAILED.value,
 }
+OPTIONAL_PHOTO_STATUS = (
+    InspectionStatus.CAPTURING_OPTIONAL_PHOTOS.value
+    if hasattr(InspectionStatus, "CAPTURING_OPTIONAL_PHOTOS")
+    else "capturing_optional_photos"
+)
 
 
 def _object_url(bucket: str, key: str | None) -> str | None:
     if not key:
         return None
-    return storage_service.presigned_url(bucket, key)
+    return f"/api/s3/{bucket}/{quote(key, safe='/')}"
+
+
+def _resolve_image_content_type(filename: str | None, content_type: str | None) -> str:
+    if content_type and content_type.startswith("image/"):
+        return content_type
+    guessed, _ = mimetypes.guess_type(filename or "")
+    if guessed and guessed.startswith("image/"):
+        return guessed
+    return "image/jpeg"
+
+
+def _resolve_image_extension(filename: str | None, content_type: str | None) -> str:
+    if filename and "." in filename:
+        ext = filename.rsplit(".", 1)[-1].strip().lower()
+        if ext in {"jpg", "jpeg", "png", "webp", "bmp", "gif"}:
+            return ext
+    guessed_ext = mimetypes.guess_extension(_resolve_image_content_type(filename, content_type) or "")
+    if guessed_ext:
+        return guessed_ext.lstrip(".")
+    return "jpg"
 
 
 def _closeup_payload(image: models.InspectionImage) -> dict:
@@ -33,6 +61,7 @@ def _closeup_payload(image: models.InspectionImage) -> dict:
         "image_id": str(image.id),
         "slot_code": image.slot_code,
         "raw_url": _object_url(settings.s3_bucket_closeups, image.object_key_raw),
+        "comment": image.note,
         "created_at": image.created_at,
     }
 
@@ -47,6 +76,73 @@ def _ensure_inspection_open(inspection: models.InspectionSession) -> None:
                 "message": "inspection is already closed",
             },
         )
+
+
+def _ensure_image_extra_photo_allowed(inspection: models.InspectionSession) -> None:
+    if inspection.status != OPTIONAL_PHOTO_STATUS:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "inspection_stage_conflict",
+                "status": inspection.status,
+                "message": "Image-level extra photos are allowed only before the photo set is confirmed.",
+            },
+        )
+
+
+def _ensure_damage_closeup_allowed(inspection: models.InspectionSession) -> None:
+    if inspection.status not in {
+        InspectionStatus.READY_FOR_REVIEW.value,
+        InspectionStatus.UNDER_REVIEW.value,
+    }:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "inspection_stage_conflict",
+                "status": inspection.status,
+                "message": "Damage closeups are available only after inference results are ready.",
+            },
+        )
+
+
+def _read_and_validate_closeup_bytes(file_bytes: bytes) -> None:
+    max_size = 20 * 1024 * 1024  # 20 MB
+    if len(file_bytes) > max_size:
+        raise HTTPException(status_code=400, detail=f"File too large ({len(file_bytes)} bytes, max {max_size})")
+
+
+def _create_closeup_row(
+    db: Session,
+    *,
+    inspection: models.InspectionSession,
+    file_bytes: bytes,
+    key: str,
+    slot_code: str | None,
+    content_type: str | None = None,
+    comment: str | None = None,
+    review_ref_id: uuid.UUID | None = None,
+    manual_ref_id: uuid.UUID | None = None,
+) -> models.InspectionImage:
+    storage_service.put_bytes(
+        settings.s3_bucket_closeups,
+        key,
+        file_bytes,
+        _resolve_image_content_type(key, content_type),
+    )
+    closeup = models.InspectionImage(
+        inspection_session_id=inspection.id,
+        image_type="optional_closeup",
+        slot_code=slot_code,
+        status="accepted",
+        capture_order=999,
+        object_key_raw=key,
+        parent_damage_review_id=review_ref_id,
+        parent_manual_damage_id=manual_ref_id,
+        note=comment,
+    )
+    db.add(closeup)
+    db.commit()
+    return closeup
 
 @router.get("/inspections/{inspection_id}")
 def get_miniapp_inspection(inspection_id: uuid.UUID, db: Session = Depends(get_db)):
@@ -68,6 +164,7 @@ def get_miniapp_inspection(inspection_id: uuid.UUID, db: Session = Depends(get_d
     closeups_by_review: dict[str, list[dict]] = {}
     closeups_by_manual: dict[str, list[dict]] = {}
     closeups_by_slot: dict[str, list[dict]] = {}
+    image_extra_photos: list[dict] = []
     for closeup in closeups:
         payload = _closeup_payload(closeup)
         has_parent = False
@@ -77,10 +174,15 @@ def get_miniapp_inspection(inspection_id: uuid.UUID, db: Session = Depends(get_d
         if closeup.parent_manual_damage_id:
             closeups_by_manual.setdefault(str(closeup.parent_manual_damage_id), []).append(payload)
             has_parent = True
-        if not has_parent and closeup.slot_code:
-            closeups_by_slot.setdefault(closeup.slot_code, []).append(payload)
+        if not has_parent:
+            image_extra_photos.append(payload)
+            if closeup.slot_code:
+                closeups_by_slot.setdefault(closeup.slot_code, []).append(payload)
 
     payload_images = []
+    valid_damage_types = {damage.value for damage in DamageType}
+    ui_min_confidence = 0.1
+
     for img in images:
         if img.image_type != "required_view" or not img.accepted:
             continue
@@ -92,13 +194,15 @@ def get_miniapp_inspection(inspection_id: uuid.UUID, db: Session = Depends(get_d
         manuals = db.execute(
             select(models.ManualDamage).where(models.ManualDamage.base_image_id == img.id)
         ).scalars().all()
-        payload_images.append({
-            "image_id": str(img.id),
-            "slot_code": img.slot_code,
-            "status": img.status,
-            "raw_url": _object_url(settings.s3_bucket_raw_images, img.object_key_raw),
-            "overlay_url": _object_url(settings.s3_bucket_overlays, img.overlay_object_key),
-            "predicted_damages": [
+        predicted_payload = []
+        for pred, review in preds:
+            if review.review_status == ReviewStatus.REJECTED.value:
+                continue
+            if (pred.confidence or 0.0) < ui_min_confidence:
+                continue
+            if pred.damage_type not in valid_damage_types:
+                continue
+            predicted_payload.append(
                 {
                     "damage_id": str(pred.id),
                     "damage_type": pred.damage_type,
@@ -112,13 +216,22 @@ def get_miniapp_inspection(inspection_id: uuid.UUID, db: Session = Depends(get_d
                     "review_id": str(review.id),
                     "review_note": review.review_note,
                     "closeups": closeups_by_review.get(str(review.id), []),
-                } for pred, review in preds
-            ],
+                }
+            )
+
+        payload_images.append({
+            "image_id": str(img.id),
+            "slot_code": img.slot_code,
+            "status": img.status,
+            "raw_url": _object_url(settings.s3_bucket_raw_images, img.object_key_raw),
+            "overlay_url": _object_url(settings.s3_bucket_overlays, img.overlay_object_key),
+            "predicted_damages": predicted_payload,
             "manual_damages": [
                 {
                     "manual_damage_id": str(md.id),
                     "damage_type": md.damage_type,
                     "bbox_norm": md.bbox_norm,
+                    "polygon_json": md.polygon_json,
                     "severity_hint": md.severity_hint,
                     "note": md.note,
                     "closeups": closeups_by_manual.get(str(md.id), []),
@@ -137,6 +250,7 @@ def get_miniapp_inspection(inspection_id: uuid.UUID, db: Session = Depends(get_d
             "vehicle_plate": vehicle.license_plate if vehicle else None,
             "vehicle_title": " ".join(part for part in [vehicle.make, vehicle.model] if part).strip() if vehicle else None,
             "images": payload_images,
+            "extra_photos": image_extra_photos,
         }
     }
 
@@ -231,14 +345,17 @@ async def attach_closeup(
     inspection = db.get(models.InspectionSession, image.inspection_session_id)
     _ensure_inspection_open(inspection)
     file_bytes = await file.read()
-    max_size = 20 * 1024 * 1024  # 20 MB
-    if len(file_bytes) > max_size:
-        raise HTTPException(status_code=400, detail=f"File too large ({len(file_bytes)} bytes, max {max_size})")
+    _read_and_validate_closeup_bytes(file_bytes)
     if (damage_ref_type and not damage_ref_id) or (damage_ref_id and not damage_ref_type):
         raise HTTPException(status_code=400, detail="damage_ref_type and damage_ref_id must be provided together")
 
     if damage_ref_type not in {None, "predicted_review", "manual"}:
         raise HTTPException(status_code=400, detail="unsupported damage_ref_type")
+
+    if damage_ref_type is None and damage_ref_id is None:
+        _ensure_image_extra_photo_allowed(inspection)
+    else:
+        _ensure_damage_closeup_allowed(inspection)
 
     review_ref_id: uuid.UUID | None = None
     manual_ref_id: uuid.UUID | None = None
@@ -254,20 +371,60 @@ async def attach_closeup(
 
     key_group = damage_ref_type or "image"
     key_ref = damage_ref_id or str(image.id)
-    key = f"{inspection.id}/{key_group}/{key_ref}/{uuid.uuid4()}.jpg"
-    storage_service.put_bytes(settings.s3_bucket_closeups, key, file_bytes, "image/jpeg")
-    closeup = models.InspectionImage(
-        inspection_session_id=inspection.id,
-        image_type="optional_closeup",
-        slot_code=image.slot_code,
-        status="accepted",
-        capture_order=999,
-        object_key_raw=key,
-        parent_damage_review_id=review_ref_id,
-        parent_manual_damage_id=manual_ref_id,
+    ext = _resolve_image_extension(file.filename, file.content_type)
+    key = f"{inspection.id}/{key_group}/{key_ref}/{uuid.uuid4()}.{ext}"
+    # Image-level extra photos are global for the inspection and must not be bound to a required slot.
+    slot_code = image.slot_code if damage_ref_type else None
+    closeup = _create_closeup_row(
+        db,
+        inspection=inspection,
+        file_bytes=file_bytes,
+        key=key,
+        slot_code=slot_code,
+        content_type=file.content_type,
+        review_ref_id=review_ref_id,
+        manual_ref_id=manual_ref_id,
     )
-    db.add(closeup)
-    db.commit()
+    return {
+        "data": {
+            "image_id": closeup.id,
+            "status": closeup.status,
+            "raw_url": _object_url(settings.s3_bucket_closeups, closeup.object_key_raw),
+            "comment": closeup.note,
+        }
+    }
+
+
+@router.post("/inspections/{inspection_id}/attach-extra-photo")
+async def attach_extra_photo(
+    inspection_id: uuid.UUID,
+    file: UploadFile = File(...),
+    comment: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    inspection = db.get(models.InspectionSession, inspection_id)
+    if not inspection:
+        raise HTTPException(status_code=404, detail="inspection not found")
+    _ensure_inspection_open(inspection)
+    _ensure_image_extra_photo_allowed(inspection)
+
+    file_bytes = await file.read()
+    _read_and_validate_closeup_bytes(file_bytes)
+    clean_comment = comment.strip()
+    if not clean_comment:
+        raise HTTPException(status_code=400, detail="comment is required")
+
+    ext = _resolve_image_extension(file.filename, file.content_type)
+    key = f"{inspection.id}/image/extra/{uuid.uuid4()}.{ext}"
+    closeup = _create_closeup_row(
+        db,
+        inspection=inspection,
+        file_bytes=file_bytes,
+        key=key,
+        slot_code=None,
+        content_type=file.content_type,
+        comment=clean_comment,
+    )
     return {
         "data": {
             "image_id": closeup.id,

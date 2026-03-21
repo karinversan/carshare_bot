@@ -14,6 +14,7 @@ class RentalStatus(StrEnum):
 class InspectionStatus(StrEnum):
     CREATED = "created"
     CAPTURING_REQUIRED_VIEWS = "capturing_required_views"
+    CAPTURING_OPTIONAL_PHOTOS = "capturing_optional_photos"
     READY_FOR_INFERENCE = "ready_for_inference"
     INFERENCE_RUNNING = "inference_running"
     READY_FOR_REVIEW = "ready_for_review"

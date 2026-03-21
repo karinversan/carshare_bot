@@ -1,7 +1,9 @@
 import uuid
+import logging
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 from sqlalchemy import select
+import httpx
 
 from apps.api_service.app.db.session import get_db
 from apps.api_service.app.db import models
@@ -10,7 +12,7 @@ from apps.api_service.app.schemas.inspections import (
 )
 from apps.api_service.app.services.inspection_service import (
     create_inspection, upload_inspection_image, run_initial_checks,
-    run_damage_inference, finalize_inspection
+    run_damage_inference, finalize_inspection, confirm_photo_set
 )
 from apps.api_service.app.services.inference_client import InferenceServiceError
 from apps.api_service.app.services.storage_service import storage_service
@@ -19,6 +21,7 @@ from packages.shared_py.car_inspection.enums import REQUIRED_SLOTS
 from packages.shared_py.car_inspection.enums import InspectionStatus
 
 router = APIRouter(prefix="/inspections", tags=["inspections"])
+logger = logging.getLogger(__name__)
 
 
 CLOSED_INSPECTION_STATUSES = {
@@ -26,6 +29,36 @@ CLOSED_INSPECTION_STATUSES = {
     InspectionStatus.CANCELLED.value,
     InspectionStatus.FAILED.value,
 }
+
+
+def _notify_bot_inspection_finalized(
+    db: Session,
+    inspection: models.InspectionSession,
+    comparison_status: str | None,
+) -> None:
+    user = db.get(models.User, inspection.user_id)
+    if not user or not user.telegram_user_id:
+        return
+
+    payload = {
+        "chat_id": int(user.telegram_user_id),
+        "inspection_id": str(inspection.id),
+        "comparison_status": comparison_status,
+    }
+    endpoints = [
+        "http://infra-bot-1:8001/internal/inspection-finalized",
+        "http://host.docker.internal:8001/internal/inspection-finalized",
+    ]
+
+    for endpoint in endpoints:
+        try:
+            with httpx.Client(timeout=2.5) as client:
+                response = client.post(endpoint, json=payload)
+                if response.status_code < 400:
+                    return
+                logger.warning("Bot finalize notify failed via %s: %s", endpoint, response.text)
+        except Exception as exc:
+            logger.warning("Bot finalize notify error via %s: %s", endpoint, exc)
 
 
 def _ensure_inspection_open(inspection: models.InspectionSession) -> None:
@@ -108,7 +141,14 @@ async def upload_image(
     file_bytes = await file.read()
     try:
         image_row = upload_inspection_image(
-            db, inspection, file_bytes, file.filename or "upload.jpg", image_type, slot_code, capture_order
+            db,
+            inspection,
+            file_bytes,
+            file.filename or "upload.jpg",
+            image_type,
+            slot_code,
+            capture_order,
+            file.content_type,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -157,11 +197,19 @@ def run_damage_inference_route(
     if not inspection:
         raise HTTPException(status_code=404, detail="inspection not found")
     _ensure_inspection_open(inspection)
+    if inspection.status != InspectionStatus.READY_FOR_INFERENCE.value:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "inspection_stage_conflict",
+                "status": inspection.status,
+                "message": f"Inspection is not ready for damage inference: {inspection.status}",
+            },
+        )
 
     if settings.async_inference and not force_sync:
         # Dispatch to Celery worker for background processing
         from apps.worker_service.app.tasks import run_damage_inference_task
-        from packages.shared_py.car_inspection.enums import InspectionStatus
         inspection.status = InspectionStatus.INFERENCE_RUNNING.value
         db.commit()
         run_damage_inference_task.delay(str(inspection_id))
@@ -169,6 +217,15 @@ def run_damage_inference_route(
 
     try:
         run_damage_inference(db, inspection)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "inspection_stage_conflict",
+                "status": inspection.status,
+                "message": str(exc),
+            },
+        ) from exc
     except InferenceServiceError as exc:
         raise HTTPException(
             status_code=503,
@@ -176,6 +233,28 @@ def run_damage_inference_route(
                 "code": "inference_unavailable",
                 "message": "Сервис анализа повреждений временно недоступен. Попробуйте ещё раз позже.",
                 "debug": str(exc),
+            },
+        ) from exc
+    db.commit()
+    return {"data": {"inspection_id": inspection.id, "status": inspection.status}}
+
+
+@router.post("/{inspection_id}/confirm-photo-set")
+def confirm_photo_set_route(inspection_id: uuid.UUID, db: Session = Depends(get_db)):
+    inspection = db.get(models.InspectionSession, inspection_id)
+    if not inspection:
+        raise HTTPException(status_code=404, detail="inspection not found")
+    _ensure_inspection_open(inspection)
+
+    try:
+        confirm_photo_set(inspection)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "inspection_stage_conflict",
+                "status": inspection.status,
+                "message": str(exc),
             },
         ) from exc
     db.commit()
@@ -209,8 +288,16 @@ def finalize_inspection_route(inspection_id: uuid.UUID, payload: FinalizeInspect
     try:
         comparison = finalize_inspection(db, inspection)
     except ValueError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "inspection_stage_conflict",
+                "status": inspection.status,
+                "message": str(e),
+            },
+        )
     db.commit()
+    _notify_bot_inspection_finalized(db, inspection, inspection.comparison_status)
     final_count = db.execute(
         select(models.InspectionDamageFinal).where(models.InspectionDamageFinal.inspection_session_id == inspection.id)
     ).scalars().all()

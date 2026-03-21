@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -14,12 +15,23 @@ logger = logging.getLogger(__name__)
 
 class APIClient:
     def __init__(self):
-        self.base_url = settings.effective_api_url.rstrip("/")
         self._client: httpx.AsyncClient | None = None
+        self._in_docker = Path("/.dockerenv").exists()
+        preferred_base = settings.effective_api_url.rstrip("/")
+        if self._in_docker and preferred_base in {
+            "http://api:8000",
+            "http://localhost:8000",
+            "http://127.0.0.1:8000",
+            "http://127.0.0.1:8002",
+        }:
+            preferred_base = "http://infra-api-1:8000"
+        self.base_url = preferred_base
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
-            self._client = httpx.AsyncClient(timeout=45.0)
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=2.0, read=12.0, write=12.0, pool=2.0)
+            )
         return self._client
 
     async def aclose(self) -> None:
@@ -30,18 +42,35 @@ class APIClient:
     async def _request(self, method: str, path: str, **kwargs) -> dict[str, Any]:
         client = await self._get_client()
         tried: list[str] = []
-        base_candidates: list[str] = [
-            self.base_url,
-            "http://api:8000",
-            "http://api-service:8000",
-            "http://infra-api-1:8000",
-            "http://127.0.0.1:8100",
-            "http://localhost:8100",
-            "http://host.docker.internal:8100",
-        ]
+        if self._in_docker:
+            base_candidates = [
+                "http://infra-api-1:8000",
+                "http://api-service:8000",
+                settings.api_service_url,
+                self.base_url,
+                settings.api_base_url,
+                "http://host.docker.internal:8100",
+                settings.public_api_base_url,
+            ]
+        else:
+            base_candidates = [
+                self.base_url,
+                settings.api_service_url,
+                settings.api_base_url,
+                settings.public_api_base_url,
+                "http://127.0.0.1:8100",
+                "http://localhost:8100",
+            ]
+
+        last_error: Exception | None = None
 
         for base in base_candidates:
-            base = base.rstrip("/")
+            base = str(base or "").strip().rstrip("/")
+            if not base:
+                continue
+            if base == "http://api:8000":
+                # Частый мусорный адрес в дублированных env контейнера.
+                continue
             if base in tried:
                 continue
             tried.append(base)
@@ -53,16 +82,22 @@ class APIClient:
                     logger.warning("API base URL fallback: %s -> %s", self.base_url, base)
                     self.base_url = base
                 return body.get("data", body)
-            except httpx.ConnectError:
-                logger.warning("API connect failed via %s", base)
+            except (
+                httpx.ConnectError,
+                httpx.TimeoutException,
+                httpx.RemoteProtocolError,
+                httpx.NetworkError,
+            ) as exc:
+                logger.warning("API connect/timeout failed via %s: %s", base, exc)
+                last_error = exc
                 continue
+            except httpx.HTTPStatusError:
+                # HTTP ошибки не ретраим по другим базам: это уже ответ API.
+                raise
 
-        # Если дошли сюда — все варианты недоступны. Повторяем исходное поведение:
-        # бросаем исключение последней попытки через исходный URL.
-        resp = await client.request(method, f"{self.base_url}{path}", **kwargs)
-        resp.raise_for_status()
-        body = resp.json()
-        return body.get("data", body)
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("API unavailable for all base URL candidates")
 
     async def create_inspection(
         self,

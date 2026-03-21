@@ -154,6 +154,10 @@ async def get_updates(offset: int | None = None, timeout: int = 20) -> dict:
     return await _call("getUpdates", payload)
 
 
+async def get_webhook_info() -> dict:
+    return await _call("getWebhookInfo", {})
+
+
 async def set_chat_menu_button(chat_id: int | None = None, menu_button: dict[str, Any] | None = None) -> dict:
     payload: dict[str, Any] = {}
     if chat_id is not None:

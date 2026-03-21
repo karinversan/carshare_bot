@@ -5,7 +5,7 @@ import json
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, Request
 
 from apps.bot_service.app import telegram_api as tg
 from apps.bot_service.app.api_client import api_client
@@ -61,13 +61,26 @@ def _is_ephemeral_user_text(text: str) -> bool:
     return all(line in _EPHEMERAL_TEXTS for line in lines)
 
 
+def _with_home_button(inline_markup: dict | None) -> dict:
+    rows = list((inline_markup or {}).get("inline_keyboard") or [])
+    rows.append([{"text": "Вернуться в главное меню", "callback_data": "return_home"}])
+    return inline_keyboard(rows)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _polling_task
     if settings.telegram_bot_token:
         await tg.set_chat_menu_button(menu_button={"type": "commands"})
     if settings.telegram_polling_enabled and settings.telegram_bot_token:
-        _polling_task = asyncio.create_task(_poll_updates_loop())
+        polling_allowed = True
+        webhook_info = await tg.get_webhook_info()
+        webhook_url = str((webhook_info.get("result") or {}).get("url") or "").strip()
+        if webhook_url:
+            polling_allowed = False
+            logger.warning("Webhook is active (%s) — polling disabled to avoid duplicate updates.", webhook_url)
+        if polling_allowed:
+            _polling_task = asyncio.create_task(_poll_updates_loop())
     yield
     if _polling_task:
         _polling_task.cancel()
@@ -282,26 +295,43 @@ async def _handle_web_app_data(chat_id: int, payload_raw: str) -> None:
     if rental["status"] == "active":
         await set_default_menu_button(chat_id)
         trip_vehicle = rental.get("vehicle", {}).get("title") or "машина"
-        active_text = (
-            f"Осмотр завершён. Удачной поездки на {trip_vehicle}.\n\n"
-            "Когда будете готовы завершить аренду, нажмите кнопку «Сдать машину» ниже."
-        )
+        remaining_min = rental.get("planned_duration_min")
+        route_label = rental.get("route_label")
+        active_text = f"Осмотр завершён. Приятной поездки на {trip_vehicle}."
+        if remaining_min:
+            active_text += f"\nОсталось ехать: примерно {remaining_min} мин."
+        if route_label:
+            active_text += f"\nМаршрут: {route_label}."
         await upsert_panel_message(
             chat_id,
-            active_text + "\n\n" + rental_message(rental),
-            inline_markup=trip_keyboard(rental),
+            active_text,
+            inline_markup=_with_home_button(trip_keyboard(rental)),
         )
         return
 
     comparison_status = payload.get("comparison_status")
-    follow_up = "Осмотр сдачи завершён. Аренда закрыта."
+    vehicle = rental.get("vehicle", {}).get("title") or "машина"
+    duration_min = rental.get("planned_duration_min")
+    follow_up = f"Поездка на {vehicle} завершена."
+    if duration_min:
+        follow_up += f"\nПлановая длительность: {duration_min} мин."
     if comparison_status == "admin_case_created":
-        follow_up += "\nОбнаружены вероятные новые повреждения, кейс отправлен в админку."
+        follow_up += "\nОткрыт спор: кейс отправлен на админ-проверку."
     elif comparison_status == "possible_new_damage":
-        follow_up += "\nЕсть подозрение на новые повреждения, данные сохранены для проверки."
+        follow_up += "\nОткрыта проверка: есть подозрение на новые повреждения."
+    else:
+        follow_up += "\nВсего доброго."
     await set_default_menu_button(chat_id)
-    await upsert_panel_message(chat_id, follow_up + "\n\n" + rental_message(rental))
-    reset_state(chat_id)
+    await upsert_panel_message(chat_id, follow_up, inline_markup=_with_home_button(None))
+
+
+async def _handle_internal_finalize_event(chat_id: int, inspection_id: str, comparison_status: str | None = None) -> None:
+    payload = {
+        "action": "inspection_finalized",
+        "inspection_id": inspection_id,
+        "comparison_status": comparison_status,
+    }
+    await _handle_web_app_data(chat_id, json.dumps(payload))
 
 
 async def _poll_updates_loop() -> None:
@@ -381,6 +411,20 @@ async def handle_callback(callback_query: dict) -> None:
         if not restored:
             await _send_dashboard(chat_id, user)
         return
+    if data == "return_home":
+        state = get_state(chat_id)
+        old_panel = state.panel_message_id
+        old_welcome = state.welcome_message_id
+        if old_panel:
+            await tg.delete_message(chat_id, old_panel)
+        if old_welcome:
+            await tg.delete_message(chat_id, old_welcome)
+        reset_state(chat_id)
+        state = get_state(chat_id)
+        state.previous_panel_text = None
+        state.previous_panel_markup = None
+        await _send_dashboard(chat_id, user, with_photo=True, force_welcome=True)
+        return
 
 
 async def process_update(update: dict) -> None:
@@ -399,13 +443,13 @@ async def process_update(update: dict) -> None:
         await _handle_web_app_data(chat_id, message["web_app_data"]["data"])
         return
 
+    should_delete_user_message = True
     try:
         if text == "/start":
-            state = get_state(chat_id)
             await _send_dashboard(
                 chat_id,
                 user,
-                with_photo=not state.welcome_sent,
+                with_photo=True,
                 force_welcome=False,
             )
             return
@@ -444,6 +488,7 @@ async def process_update(update: dict) -> None:
             "Используйте кнопки ниже: выбрать авто, посмотреть поездку или перейти в админку.",
         )
     except Exception:
+        should_delete_user_message = False
         logger.exception("Failed to process update chat=%s text=%r", chat_id, text)
         try:
             await _show_error_panel(
@@ -453,7 +498,7 @@ async def process_update(update: dict) -> None:
         except Exception:
             logger.exception("Failed to show fallback error panel chat=%s", chat_id)
     finally:
-        if _is_ephemeral_user_text(text):
+        if should_delete_user_message and _is_ephemeral_user_text(text):
             await _delete_user_command_message(message)
 
 
@@ -467,8 +512,25 @@ async def telegram_webhook(
     request: Request,
     x_telegram_bot_api_secret_token: str | None = Header(default=None),
 ):
-    if settings.telegram_webhook_secret and x_telegram_bot_api_secret_token != settings.telegram_webhook_secret:
-        raise HTTPException(status_code=403, detail="invalid webhook secret")
+    if settings.telegram_webhook_secret and x_telegram_bot_api_secret_token is not None:
+        if x_telegram_bot_api_secret_token != settings.telegram_webhook_secret:
+            logger.warning("Webhook secret mismatch: got token from Telegram, but accepting update in demo mode.")
     update = await request.json()
     await process_update(update)
     return {"ok": True}
+
+
+@app.post("/internal/inspection-finalized")
+async def internal_inspection_finalized(request: Request):
+    body = await request.json()
+    chat_id = int(body.get("chat_id") or 0)
+    inspection_id = str(body.get("inspection_id") or "").strip()
+    comparison_status = body.get("comparison_status")
+    if not chat_id or not inspection_id:
+        return {"ok": False, "error": "chat_id and inspection_id are required"}
+    try:
+        await _handle_internal_finalize_event(chat_id, inspection_id, comparison_status)
+        return {"ok": True}
+    except Exception as exc:
+        logger.exception("Internal finalize event failed chat=%s inspection=%s", chat_id, inspection_id)
+        return {"ok": False, "error": str(exc)}

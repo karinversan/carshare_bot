@@ -29,12 +29,14 @@ const tg = window.Telegram?.WebApp;
 const API = (import.meta as any).env.VITE_API_BASE_URL || `${window.location.origin}/api`;
 
 type BBox = { x1: number; y1: number; x2: number; y2: number };
-type Closeup = { image_id: string; slot_code?: string; raw_url: string; created_at?: string };
+type PolygonPoint = [number, number];
+type Closeup = { image_id: string; slot_code?: string; raw_url: string; comment?: string; created_at?: string };
 type Damage = {
   damage_id: string;
   damage_type: string;
   confidence: number;
   bbox_norm: BBox;
+  polygon_json?: PolygonPoint[] | null;
   review_status: string;
   review_id: string;
   review_note?: string;
@@ -44,6 +46,7 @@ type ManualDamage = {
   manual_damage_id: string;
   damage_type: string;
   bbox_norm: BBox;
+  polygon_json?: PolygonPoint[] | null;
   severity_hint: string;
   note?: string | null;
   closeups?: Closeup[];
@@ -60,6 +63,10 @@ type LocalPreview = {
   url: string;
   status: "uploading" | "rejected" | "error";
   source: "hero" | "slot";
+};
+type ExtraPhotoPreview = {
+  url: string;
+  status: "uploading" | "error";
 };
 type Img = {
   image_id: string;
@@ -80,6 +87,7 @@ type InspectionData = {
   vehicle_plate?: string | null;
   vehicle_title?: string | null;
   images: Img[];
+  extra_photos?: Closeup[];
 };
 type FinalizeResult = {
   inspection_id: string;
@@ -549,6 +557,17 @@ const css = `
   .capture-state.error::before {
     background: var(--danger);
   }
+  .extra-comment-input {
+    width: 100%;
+    min-height: 74px;
+    border-radius: 16px;
+    border: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.9);
+    color: var(--text);
+    padding: 10px 12px;
+    line-height: 1.35;
+    resize: vertical;
+  }
   .slot-meta {
     display: grid;
     gap: 12px;
@@ -726,7 +745,14 @@ const css = `
     position: absolute;
     inset: 0;
     pointer-events: none;
-    opacity: 0.94;
+    opacity: 0.52;
+  }
+  .viewer .vector-overlay {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
   }
   .bbox {
     position: absolute;
@@ -990,6 +1016,33 @@ function centeredBox(x: number, y: number): BBox {
   };
 }
 
+function bboxToPolygon(bbox: BBox): PolygonPoint[] {
+  return [
+    [bbox.x1, bbox.y1],
+    [bbox.x2, bbox.y1],
+    [bbox.x2, bbox.y2],
+    [bbox.x1, bbox.y2],
+  ];
+}
+
+function polygonToSvgPoints(polygon?: PolygonPoint[] | null, bbox?: BBox): string {
+  const source = polygon && polygon.length >= 3 ? polygon : bbox ? bboxToPolygon(bbox) : [];
+  return source
+    .map(([x, y]) => `${clamp(x, 0, 1) * 100},${clamp(y, 0, 1) * 100}`)
+    .join(" ");
+}
+
+function hexToRgba(hex: string, alpha: number): string {
+  const normalized = hex.replace("#", "");
+  const full = normalized.length === 3 ? normalized.split("").map((chunk) => `${chunk}${chunk}`).join("") : normalized;
+  const int = Number.parseInt(full, 16);
+  if (Number.isNaN(int)) return `rgba(21, 32, 25, ${alpha})`;
+  const r = (int >> 16) & 255;
+  const g = (int >> 8) & 255;
+  const b = int & 255;
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 function humanizeViewLabel(label?: string) {
   if (!label) return "неподходящий ракурс";
   const normalized = label.trim().toLowerCase().replace(/^['"]|['"]$/g, "");
@@ -1028,6 +1081,9 @@ function humanizeRejectionReason(reason?: string, expectedSlot?: string) {
       return `Фото не подходит: машина видна не целиком или кадр слишком обрезан. Нужен кадр «${expected}». Снимите весь кузов с нужной стороны без обрезанных краёв.`;
     }
     if (gotRaw === "front_valid" || gotRaw === "rear_valid" || gotRaw === "side_valid") {
+      if (gotRaw === "side_valid" && (wrongViewMatch[1] === "left_side" || wrongViewMatch[1] === "right_side")) {
+        return `Распознан боковой ракурс без уверенного определения стороны. Для кадра «${expected}» подойдите именно к нужной стороне машины и снимите кузов целиком без угла.`;
+      }
       return `Фото не подходит по углу съёмки. Нужен кадр «${expected}». Перейдите к нужному ракурсу и снимите кузов целиком.`;
     }
     return `Неверный ракурс. Нужен кадр «${expected}», а сейчас больше похож на «${got}». Подойдите к нужной стороне машины и снимите кузов целиком.`;
@@ -1089,6 +1145,9 @@ function App() {
   const [uploadingSlot, setUploadingSlot] = useState<string | null>(null);
   const [uploadingCloseupFor, setUploadingCloseupFor] = useState<string | null>(null);
   const [uploadingImageCloseupFor, setUploadingImageCloseupFor] = useState<string | null>(null);
+  const [uploadingExtraPhoto, setUploadingExtraPhoto] = useState(false);
+  const [extraPhotoComment, setExtraPhotoComment] = useState("");
+  const [extraPhotoPreview, setExtraPhotoPreview] = useState<ExtraPhotoPreview | null>(null);
   const viewerRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const localPreviewsRef = useRef<Record<string, LocalPreview | undefined>>({});
 
@@ -1117,6 +1176,14 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    return () => {
+      if (extraPhotoPreview?.url) {
+        URL.revokeObjectURL(extraPhotoPreview.url);
+      }
+    };
+  }, [extraPhotoPreview]);
+
   const orderedImages = useMemo(() => {
     if (!data) return [];
     const order = new Map(SLOT_ORDER.map((slot, index) => [slot, index]));
@@ -1144,24 +1211,23 @@ function App() {
 
   const acceptedCount = data?.accepted_slots.length ?? 0;
   const captureComplete = !!data && acceptedCount === data.required_slots.length;
-  const hasInferenceOutput = orderedImages.some(
-    (image) => !!image.overlay_url || image.predicted_damages.length > 0 || image.manual_damages.length > 0,
-  );
+  const optionalPhotoStage = !!data && captureComplete && data.status === "capturing_optional_photos";
+  const photoSetConfirmed = !!data && captureComplete && data.status === "ready_for_inference";
+  const inferenceRunning = !!data && data.status === "inference_running";
+  const inspectionFinalized = !!finalizeResult || data?.status === "finalized";
   const inferenceReady =
     !!data &&
+    !inspectionFinalized &&
     captureComplete &&
-    (hasInferenceOutput || ["ready_for_review", "under_review", "finalized"].includes(data.status));
-  const waitingForInference = !!data && captureComplete && !inferenceReady;
-  const pendingCount = orderedImages.reduce(
-    (sum, image) =>
-      sum +
-      image.predicted_damages.filter((damage) => ["pending", "uncertain"].includes(damage.review_status)).length,
-    0,
-  );
-  const totalFindings = orderedImages.reduce(
-    (sum, image) => sum + image.predicted_damages.length + image.manual_damages.length,
-    0,
-  );
+    ["ready_for_review", "under_review", "finalized"].includes(data.status);
+  const waitingForInference =
+    !!data &&
+    !inspectionFinalized &&
+    captureComplete &&
+    !inferenceReady &&
+    (optionalPhotoStage || photoSetConfirmed || inferenceRunning);
+  const extraPhotos = data?.extra_photos ?? [];
+  const totalUploadedPhotos = acceptedCount + extraPhotos.length;
 
   useEffect(() => {
     if (!tg?.MainButton) return;
@@ -1279,6 +1345,10 @@ function App() {
   async function runInference(explicitInspectionId?: string) {
     const currentInspectionId = explicitInspectionId || data?.inspection_id;
     if (!currentInspectionId) return;
+    if (data?.status !== "ready_for_inference") {
+      setError("Сначала подтвердите набор фото перед запуском анализа.");
+      return;
+    }
     setBusy(true);
     setPhotosReviewConfirmed(false);
     setError("");
@@ -1295,6 +1365,23 @@ function App() {
     }
   }
 
+  async function confirmPhotoSet() {
+    if (!data) return;
+    setBusy(true);
+    setError("");
+    try {
+      const response = await fetch(`${API}/inspections/${data.inspection_id}/confirm-photo-set`, {
+        method: "POST",
+      });
+      if (!response.ok) throw new Error(await readApiError(response, "Не удалось подтвердить набор фото"));
+      await loadInspection(data.inspection_id);
+    } catch (err: any) {
+      setError(err.message || "Не удалось подтвердить набор фото.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function updateDecision(damageId: string, action: "confirm" | "reject" | "uncertain") {
     setBusy(true);
     setError("");
@@ -1304,7 +1391,12 @@ function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
       });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (response.status === 404) {
+        if (data) await loadInspection(data.inspection_id);
+        setError("Это повреждение уже обновлено после пересъёмки. Список синхронизирован.");
+        return;
+      }
+      if (!response.ok) throw new Error(await readApiError(response, "Не удалось сохранить решение"));
       if (data) await loadInspection(data.inspection_id);
     } catch (err: any) {
       setError(err.message || "Не удалось сохранить решение.");
@@ -1397,6 +1489,41 @@ function App() {
     }
   }
 
+  async function attachExtraPhoto(file: File, comment: string) {
+    if (!data) return;
+    const previewUrl = URL.createObjectURL(file);
+    const previousPreview = extraPhotoPreview;
+    setUploadingExtraPhoto(true);
+    setExtraPhotoPreview({ url: previewUrl, status: "uploading" });
+    setError("");
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      form.append("comment", comment.trim());
+      const response = await fetch(`${API}/miniapp/inspections/${data.inspection_id}/attach-extra-photo`, {
+        method: "POST",
+        body: form,
+      });
+      if (!response.ok) throw new Error(await readApiError(response, "Не удалось загрузить дополнительное фото"));
+      await loadInspection(data.inspection_id);
+      setPhotosReviewConfirmed(false);
+      setExtraPhotoComment("");
+      setExtraPhotoPreview(null);
+      URL.revokeObjectURL(previewUrl);
+      if (previousPreview?.url && previousPreview.url !== previewUrl) {
+        URL.revokeObjectURL(previousPreview.url);
+      }
+    } catch (err: any) {
+      setError(err.message || "Не удалось загрузить дополнительное фото.");
+      setExtraPhotoPreview({ url: previewUrl, status: "error" });
+      if (previousPreview?.url && previousPreview.url !== previewUrl) {
+        URL.revokeObjectURL(previousPreview.url);
+      }
+    } finally {
+      setUploadingExtraPhoto(false);
+    }
+  }
+
   async function finalizeInspection() {
     if (!data) return;
     if (!photosReviewConfirmed) {
@@ -1415,16 +1542,18 @@ function App() {
       const json = await response.json();
       setFinalizeResult(json.data);
       setData((current) => (current ? { ...current, status: json.data.status } : current));
-      tg?.sendData?.(
-        JSON.stringify({
-          action: "inspection_finalized",
-          inspection_id: json.data.inspection_id,
-          comparison_status: json.data.comparison_status,
-          canonical_damage_count: json.data.canonical_damage_count,
-        }),
-      );
+      const botPayload = JSON.stringify({
+        action: "inspection_finalized",
+        inspection_id: json.data.inspection_id,
+        comparison_status: json.data.comparison_status,
+        canonical_damage_count: json.data.canonical_damage_count,
+      });
+      tg?.sendData?.(botPayload);
+      window.setTimeout(() => {
+        tg?.sendData?.(botPayload);
+      }, 350);
       if (tg?.close) {
-        window.setTimeout(() => tg.close(), 350);
+        window.setTimeout(() => tg.close(), 1600);
       }
     } catch (err: any) {
       setError(err.message || "Не удалось завершить осмотр.");
@@ -1459,6 +1588,74 @@ function App() {
     );
   }
 
+  function renderExtraPhotoCards(closeups?: Closeup[]) {
+    if (!closeups?.length) return null;
+    return (
+      <div className="slot-grid">
+        {closeups.map((closeup, index) => (
+          <div key={closeup.image_id} className="capture-card slot-card">
+            <div className="slot-meta">
+              <div className="slot-title-row">
+                <strong>{`Доп. фото ${index + 1}`}</strong>
+                <div className="slot-status done">Загружено</div>
+              </div>
+              <a className="upload-btn" href={closeup.raw_url} target="_blank" rel="noreferrer">
+                Открыть
+              </a>
+            </div>
+            <div className="slot-thumb">
+              <img src={closeup.raw_url} alt={`Доп. фото ${index + 1}`} loading="lazy" />
+            </div>
+            {closeup.comment ? (
+              <div className="muted" style={{ marginTop: 10 }}>{closeup.comment}</div>
+            ) : (
+              <div className="muted" style={{ marginTop: 10 }}>Комментарий не добавлен.</div>
+            )}
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  function renderGeometryOverlay(image: Img) {
+    const polygons = [
+      ...image.predicted_damages.map((damage) => ({
+        key: `pred-${damage.damage_id}`,
+        points: polygonToSvgPoints(damage.polygon_json, damage.bbox_norm),
+        stroke: DAMAGE_COLORS[damage.damage_type] || "#15202B",
+        fill: hexToRgba(DAMAGE_COLORS[damage.damage_type] || "#15202B", damage.polygon_json && damage.polygon_json.length > 4 ? 0.22 : 0.12),
+        dash: damage.polygon_json && damage.polygon_json.length > 4 ? undefined : "6 4",
+      })),
+      ...image.manual_damages.map((damage) => ({
+        key: `manual-${damage.manual_damage_id}`,
+        points: polygonToSvgPoints(damage.polygon_json, damage.bbox_norm),
+        stroke: "#15202B",
+        fill: "rgba(21, 32, 43, 0.08)",
+        dash: "10 6",
+      })),
+    ].filter((shape) => !!shape.points);
+
+    if (!polygons.length) return null;
+
+    return (
+      <svg className="vector-overlay" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+        {polygons.map((shape) => (
+          <polygon
+            key={shape.key}
+            points={shape.points}
+            fill={shape.fill}
+            stroke={shape.stroke}
+            strokeWidth={1.25}
+            strokeLinejoin="round"
+            strokeLinecap="round"
+            vectorEffect="non-scaling-stroke"
+            strokeDasharray={shape.dash}
+          />
+        ))}
+      </svg>
+    );
+  }
+
   function renderPredictedDamage(image: Img, damage: Damage) {
     const color = DAMAGE_COLORS[damage.damage_type] || "#15202B";
     const reviewColor =
@@ -1478,7 +1675,10 @@ function App() {
             </div>
             <div>
               <strong>{DAMAGE_LABELS[damage.damage_type] || damage.damage_type}</strong>
-              <span>{Math.round(damage.confidence * 100)}% уверенность</span>
+              <span>
+                {Math.round(damage.confidence * 100)}% уверенность
+                {damage.polygon_json && damage.polygon_json.length > 4 ? " · контур по маске" : " · контур области"}
+              </span>
             </div>
           </div>
           <div className="review-pill" style={{ background: reviewColor }}>
@@ -1559,6 +1759,8 @@ function App() {
   const nextPreview = nextSlot ? localPreviews[nextSlot] : undefined;
   const remainingSlots = data?.required_slots.filter((slot) => !data.accepted_slots.includes(slot)) || [];
   const vehicleBadge = data?.vehicle_plate || data?.vehicle_id || "Авто";
+  const latestExtraPhotoUrl = extraPhotos.length ? extraPhotos[extraPhotos.length - 1].raw_url : "";
+  const extraPreviewUrl = extraPhotoPreview?.url || latestExtraPhotoUrl;
 
   return (
     <div className="app-shell">
@@ -1580,12 +1782,18 @@ function App() {
                   </strong>
                 <div className="progress-note">
                   {captureComplete
-                    ? "Можно перейти к проверке найденных повреждений."
+                    ? optionalPhotoStage
+                      ? "Можно добавить доп. фото и подтвердить набор перед анализом."
+                      : photoSetConfirmed
+                        ? "Набор фото подтверждён. Доп. фото заблокированы, можно запускать анализ."
+                        : inferenceRunning
+                          ? "Анализ уже запущен. Подождите, пока загрузятся результаты."
+                          : "Можно перейти к проверке найденных повреждений."
                     : `Осталось снять: ${remainingSlots.map((slot) => SLOT_LABELS[slot]).join(", ")}`}
                 </div>
               </div>
               <div className={`slot-status ${captureComplete ? "done" : ""}`}>
-                {captureComplete ? "Готово" : "Обязательные фото"}
+                {captureComplete ? (photoSetConfirmed ? "Подтверждено" : "Готово") : "Обязательные фото"}
               </div>
               </div>
           </div>
@@ -1720,32 +1928,103 @@ function App() {
                 );
               })}
             </div>
+
           </>
         ) : null}
 
         {data && captureComplete ? (
           <>
-            <div className="summary-grid">
-              <div className="summary-card">
-                <strong>{orderedImages.length}</strong>
-                <span>Проверено ракурсов</span>
-              </div>
-              <div className="summary-card">
-                <strong>{totalFindings}</strong>
-                <span>Найдено системой</span>
-              </div>
-              <div className="summary-card">
-                <strong>{pendingCount}</strong>
-                <span>Низкая/средняя уверенность</span>
-              </div>
-            </div>
-
             {waitingForInference ? (
               <>
-                <div className="section-title">
-                  <h3>Подтвердите набор фото</h3>
-                  <span>До анализа можно переснять ракурс и добавить доп. фото</span>
+                <div className="summary-grid">
+                  <div className="summary-card">
+                    <strong>{totalUploadedPhotos}</strong>
+                    <span>Загружено фото</span>
+                  </div>
                 </div>
+                <div className="section-title">
+                  <h3>Подготовка к анализу</h3>
+                  <span>
+                    {optionalPhotoStage
+                      ? "До подтверждения можно переснять ракурс и добавить доп. фото"
+                      : photoSetConfirmed
+                        ? "Набор фото зафиксирован, теперь можно запускать анализ"
+                        : "Дождитесь завершения анализа"}
+                  </span>
+                </div>
+                <div className="capture-card capture-hero" style={{ marginBottom: 14 }}>
+                  <div className="capture-head" style={{ marginBottom: 10 }}>
+                    <div>
+                      <h2 style={{ fontSize: 26 }}>Доп. фото</h2>
+                      <div className="muted" style={{ marginTop: 8 }}>
+                        Добавьте дополнительные фото перед запуском анализа.
+                      </div>
+                    </div>
+                  </div>
+                  <div className={`capture-preview ${extraPhotoPreview?.status === "uploading" ? "is-pending" : ""} ${extraPhotoPreview?.status === "error" ? "is-error" : ""}`}>
+                    {extraPreviewUrl ? (
+                      <img src={extraPreviewUrl} alt="Доп. фото" loading="lazy" />
+                    ) : (
+                      <div className="capture-empty">
+                        <div className="capture-empty-inner">
+                          <div className="capture-icon">+</div>
+                          <strong>Доп. фото</strong>
+                          <div className="muted">Снимите дополнительный кадр крупным планом.</div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  <textarea
+                    className="extra-comment-input"
+                    value={extraPhotoComment}
+                    onChange={(event) => setExtraPhotoComment(event.target.value)}
+                    placeholder="Комментарий к доп. фото (обязательно). Например: «Крупный план скола на заднем бампере»."
+                    disabled={!optionalPhotoStage || busy || uploadingExtraPhoto}
+                  />
+                  <div className="capture-foot">
+                    {extraPhotoPreview ? (
+                      <div className={`capture-state ${extraPhotoPreview.status === "uploading" ? "pending" : "error"}`}>
+                        {extraPhotoPreview.status === "uploading" ? "Загружаем дополнительное фото..." : "Не удалось загрузить дополнительное фото"}
+                      </div>
+                    ) : null}
+                    <label className="primary-btn" style={{ opacity: optionalPhotoStage ? 1 : 0.6 }}>
+                      {uploadingExtraPhoto ? "Загружаем..." : extraPhotos.length ? "Добавить ещё доп. фото" : "Добавить доп. фото"}
+                      <input
+                        hidden
+                        type="file"
+                        accept="image/*"
+                        capture="environment"
+                        disabled={!optionalPhotoStage || busy}
+                        onChange={(event) => {
+                          const file = event.target.files?.[0];
+                          if (file) {
+                            const comment = extraPhotoComment.trim();
+                            if (!comment) {
+                              setError("Добавьте комментарий к доп. фото перед загрузкой.");
+                              event.currentTarget.value = "";
+                              return;
+                            }
+                            void attachExtraPhoto(file, comment);
+                          }
+                          event.currentTarget.value = "";
+                        }}
+                      />
+                    </label>
+                    <div className="slot-status done" style={{ marginLeft: "auto" }}>
+                      {extraPhotos.length} доп. фото
+                    </div>
+                  </div>
+                  <div className="muted" style={{ marginTop: 10 }}>
+                    {optionalPhotoStage
+                      ? "После подтверждения набора фото добавление доп. кадров будет закрыто."
+                      : "Новые доп. фото уже заблокированы. Если нужно изменить набор, переснимите обязательный ракурс."}
+                  </div>
+                </div>
+                {extraPhotos.length ? (
+                  renderExtraPhotoCards(extraPhotos)
+                ) : (
+                  <div className="muted" style={{ marginTop: 8, marginBottom: 16 }}>Пока нет дополнительных фото.</div>
+                )}
                 <div className="review-stack">
                   {orderedImages.map((image) => {
                     return (
@@ -1771,57 +2050,43 @@ function App() {
                               }}
                             />
                           </label>
-                          <label className="ghost-btn">
-                            {uploadingImageCloseupFor === image.image_id ? "Загружаем..." : "Добавить доп. фото"}
-                            <input
-                              hidden
-                              type="file"
-                              accept="image/*"
-                              capture="environment"
-                              onChange={(event) => {
-                                const file = event.target.files?.[0];
-                                if (file) {
-                                  void attachCloseup(image.image_id, file);
-                                }
-                                event.currentTarget.value = "";
-                              }}
-                            />
-                          </label>
                         </div>
                         <div className="viewer">
                           <img src={image.raw_url} alt={SLOT_LABELS[image.slot_code] || image.slot_code} draggable={false} />
                         </div>
-                        <div className="section-title">
-                          <h3>Дополнительные фото</h3>
-                          <span>{image.image_closeups?.length || 0} шт.</span>
-                        </div>
-                        {image.image_closeups?.length ? (
-                          renderCloseups(image.image_closeups)
-                        ) : (
-                          <div className="muted">Пока нет дополнительных фото для этого ракурса.</div>
-                        )}
                       </div>
                     );
                   })}
                 </div>
 
                 <div className="notice" style={{ marginTop: 16 }}>
-                  <strong>Запуск анализа повреждений</strong>
-                  <p>Подтвердите, что вы проверили все 4 обязательных ракурса и загрузили нужные доп. фото.</p>
+                  <strong>{optionalPhotoStage ? "Подтвердите набор фото" : "Запуск анализа повреждений"}</strong>
+                  <p>
+                    {optionalPhotoStage
+                      ? "Подтвердите, что вы проверили все 4 обязательных ракурса и загрузили нужные доп. фото."
+                      : photoSetConfirmed
+                        ? "Набор фото подтверждён. Доп. фото заблокированы, можно запускать сегментацию."
+                        : "Анализ уже выполняется. Подождите, пока результаты загрузятся на экран."}
+                  </p>
                   <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12 }}>
-                    <button
-                      className={photosReviewConfirmed ? "secondary-btn" : "ghost-btn"}
-                      onClick={() => setPhotosReviewConfirmed((value) => !value)}
-                    >
-                      {photosReviewConfirmed ? "Проверка подтверждена" : "Я проверил(а) фото перед анализом"}
-                    </button>
-                    <button
-                      className="primary-btn"
-                      disabled={!photosReviewConfirmed || busy}
-                      onClick={() => void runInference(data.inspection_id)}
-                    >
-                      Запустить анализ повреждений
-                    </button>
+                    {optionalPhotoStage ? (
+                      <button
+                        className="primary-btn"
+                        disabled={busy}
+                        onClick={() => void confirmPhotoSet()}
+                      >
+                        Подтвердить набор фото
+                      </button>
+                    ) : null}
+                    {photoSetConfirmed ? (
+                      <button
+                        className="primary-btn"
+                        disabled={busy}
+                        onClick={() => void runInference(data.inspection_id)}
+                      >
+                        Запустить анализ повреждений
+                      </button>
+                    ) : null}
                   </div>
                 </div>
               </>
@@ -1872,6 +2137,7 @@ function App() {
                         <div className="viewer">
                           <img src={image.raw_url} alt={SLOT_LABELS[image.slot_code] || image.slot_code} draggable={false} />
                           {image.overlay_url ? <img className="overlay" src={image.overlay_url} alt="Damage overlay" /> : null}
+                          {renderGeometryOverlay(image)}
                         </div>
                         {image.predicted_damages.length ? (
                           <div className="damage-stack" style={{ marginTop: 12 }}>
@@ -1880,19 +2146,19 @@ function App() {
                         ) : (
                           <div className="muted" style={{ marginTop: 12 }}>На этом ракурсе повреждения не найдены.</div>
                         )}
-                        <div className="section-title">
-                          <h3>Дополнительные фото</h3>
-                          <span>{image.image_closeups?.length || 0} шт.</span>
-                        </div>
-                        {image.image_closeups?.length ? (
-                          renderCloseups(image.image_closeups)
-                        ) : (
-                          <div className="muted">Пока нет дополнительных фото для этого ракурса.</div>
-                        )}
                       </div>
                     );
                   })}
                 </div>
+                <div className="section-title">
+                  <h3>Дополнительные фото</h3>
+                  <span>{extraPhotos.length} шт.</span>
+                </div>
+                {extraPhotos.length ? (
+                  renderExtraPhotoCards(extraPhotos)
+                ) : (
+                  <div className="muted">Дополнительные фото не добавлялись.</div>
+                )}
 
                 <div className="notice" style={{ marginTop: 16 }}>
                   <strong>Финальная проверка перед сдачей</strong>

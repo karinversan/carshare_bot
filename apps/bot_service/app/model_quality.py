@@ -94,7 +94,7 @@ def format_quality_report_message(report: dict[str, Any]) -> str:
     if paired:
         lines.extend(
             [
-                "<b>4) Diff Engine (paired eval)</b>",
+                "<b>4) Сравнение PRE/POST (Diff Engine)</b>",
                 f"• Matched existing: {paired.get('matched_count', 'n/a')}",
                 f"• New confirmed: {paired.get('new_confirmed_count', 'n/a')}",
                 f"• Possible new: {paired.get('possible_new_count', 'n/a')}",
@@ -109,10 +109,9 @@ def format_quality_report_message(report: dict[str, Any]) -> str:
         text = str(note)
         lowered = text.lower()
         if "checkpoint" in lowered or "metrics file" in lowered:
-            sanitized_notes.append("Использованы служебные артефакты оценки сегментации (детали пути скрыты).")
             continue
         sanitized_notes.append(text)
-    if notes:
+    if sanitized_notes:
         lines.append("<b>Примечания</b>")
         lines.extend(f"• {note}" for note in sanitized_notes[:5])
         lines.append("")

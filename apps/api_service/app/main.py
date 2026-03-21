@@ -31,6 +31,10 @@ def _ensure_runtime_columns() -> None:
             final_columns = {column["name"] for column in inspector.get_columns("inspection_damages_final")}
             if "note" not in final_columns:
                 conn.execute(text("ALTER TABLE inspection_damages_final ADD COLUMN note TEXT"))
+
+            image_columns = {column["name"] for column in inspector.get_columns("inspection_images")}
+            if "note" not in image_columns:
+                conn.execute(text("ALTER TABLE inspection_images ADD COLUMN note TEXT"))
     except Exception as exc:
         logger.warning("Skipping optional runtime schema update: %s", exc)
 

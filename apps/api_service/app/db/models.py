@@ -113,6 +113,7 @@ class InspectionImage(Base):
     duplicate_of_image_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("inspection_images.id"), nullable=True)
     parent_damage_review_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
     parent_manual_damage_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
     pipeline_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
