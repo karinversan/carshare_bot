@@ -134,13 +134,13 @@ What these screenshots validate in product terms:
 | Component | Model | Role | Latest metrics (aggregated) |
 |---|---|---|---|
 | Quality gate | **EfficientNet-B0** | binary accept / reject quality classification | Accuracy **0.9213** · Macro F1 **0.9212** · Reject precision **0.9318** · Reject recall **0.9091** |
-| View validation | **EfficientNet-B0** | 5-class viewpoint / validity classification | Accuracy **0.9448** · Macro F1 **0.9444** · F1: `front_valid` **0.9436**, `rear_valid` **0.9610**, `side_valid` **0.9460**, `angled_invalid` **0.8983**, `other_invalid` **0.9732** |
-| Latest evaluated external artifact | **YOLO11n-seg checkpoint** | externally trained checkpoint referenced by latest quality report | Used as latest evaluated artifact in paired quality report |
+| View validation | **EfficientNet-B0** | 5-class viewpoint / validity classification | Accuracy **0.9448** · Macro F1 **0.9444** |
+| Damage segmentation model | **YOLO11n-seg** | model for segmentation and classification of damage types | Mask mAP@50 **0.6718** · Mask mAP@50-95 **0.4889** · Precision **0.7142** · Recall **0.6818** |
 
 ### Model notes
 
 - The current runtime loader supports **split EfficientNet-B0 classifiers** for quality gate and view validation.
-- The latest aggregated evaluation report references an **external YOLO11n segmentation checkpoint** as the active evaluated artifact.
+- **YOLO11n-seg** is used as the damage model for segmentation and damage-type classification.
 
 ---
 
@@ -266,7 +266,7 @@ The inference boundary supports multiple modes:
 - `mock`:
   quickest local demo mode with stable response contracts
 - `weights`:
-  loads local quality / viewpoint and damage segmentation checkpoints
+  loads local quality / viewpoint and damage segmentation models
 - `mlflow`:
   MLflow-oriented loading path for registered models
 
