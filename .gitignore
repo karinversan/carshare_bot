@@ -59,6 +59,8 @@ ml/data/
 ml/**/weights/
 ml/**/runs/
 ml/**/reports/*.json
+!ml/evaluation/reports/model_quality_latest.json
+!ml/evaluation/reports/model_quality_history.jsonl
 notebooks/*.pt
 notebooks/*.pth
 notebooks/*.ckpt

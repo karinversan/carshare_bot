@@ -1,0 +1,47 @@
+{
+  "generated_at": "2026-03-20T14:56:02.225519+00:00",
+  "quality_gate": {
+    "accuracy": 0.9212548015364916,
+    "macro_f1": 0.9212431486507593,
+    "weighted_f1": 0.9212431486507593,
+    "reject_precision": 0.931758530183727,
+    "reject_recall": 0.9090909090909091,
+    "support": 1562
+  },
+  "view_validation": {
+    "accuracy": 0.9448484848484848,
+    "macro_f1": 0.9444025752194181,
+    "classes": {
+      "front_valid_f1": 0.9435736677115988,
+      "rear_valid_f1": 0.960960960960961,
+      "side_valid_f1": 0.945985401459854,
+      "angled_invalid_f1": 0.8982785602503912,
+      "other_invalid_f1": 0.9732142857142857
+    },
+    "support": 1650
+  },
+  "damage_segmentation": {
+    "source": "/Users/versache-karinndzi/Downloads/car-inspection-assistant/ml/damage_seg/weights/external/best_yolo11n_cardd_seg_from_coco_kaggle_metrics.json",
+    "metric_name": "metrics/mAP50(M)",
+    "metric_value": 0.6718473417103082,
+    "precision_m": 0.7142079175397521,
+    "recall_m": 0.6817811566424784,
+    "map50_m": 0.6718473417103082,
+    "map50_95_m": 0.4888595634921388,
+    "epoch": null,
+    "checkpoint_path": "/Users/versache-karinndzi/Downloads/best_yolo11n_cardd_seg_from_coco_kaggle.pt"
+  },
+  "paired_comparison": {
+    "post_damage_count": 4,
+    "matched_count": 3,
+    "new_confirmed_count": 1,
+    "possible_new_count": 0,
+    "new_confirmed_rate": 0.25,
+    "diff_version": "v1",
+    "thresholds": {
+      "strong_match": 0.65,
+      "weak_match": 0.45
+    }
+  },
+  "notes": []
+}
