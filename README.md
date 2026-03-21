@@ -35,23 +35,23 @@ An end-to-end demo of a rental-driven car inspection product. The project combin
 
 ## Prediction examples (real mobile run)
 
-<table>
+<table width="100%">
   <tr>
-    <td align="center">
+    <td align="center" valign="top" width="50%">
       <img src="docs/screenshots/miniapp_rear_slot_accepted_no_damage.png" width="320" alt="Rear slot accepted without damages" /><br/>
       <sub>Accepted rear slot: no damage findings on this angle</sub>
     </td>
-    <td align="center">
+    <td align="center" valign="top" width="50%">
       <img src="docs/screenshots/miniapp_rear_slot_accepted_launch_damage_analysis.png" width="320" alt="Damage analysis launch confirmation" /><br/>
       <sub>Confirmed photo set: explicit start of damage segmentation</sub>
     </td>
   </tr>
   <tr>
-    <td align="center">
+    <td align="center" valign="top" width="50%">
       <img src="docs/screenshots/miniapp_damage_segmentation_masks_autoconfirmed.png" width="320" alt="Mask-based segmentation result" /><br/>
       <sub>Mask overlays and confidence-based auto-accept decisions</sub>
     </td>
-    <td align="center">
+    <td align="center" valign="top" width="50%">
       <img src="docs/screenshots/bot_post_inspection_trip_finished_admin_case.png" width="320" alt="Post-inspection summary in bot" /><br/>
       <sub>Post-inspection result: trip summary and admin-review status</sub>
     </td>
@@ -69,41 +69,35 @@ Typical outcomes shown by the current pipeline:
 
 ## Interface walkthrough (screens from latest run)
 
-<table>
+<table width="100%">
   <tr>
-    <td align="center">
-      <img src="docs/screenshots/bot_start_ready_to_drive_return_flow.png" width="220" alt="Bot start and entry prompt" /><br/>
+    <td align="center" valign="top" width="50%">
+      <img src="docs/screenshots/bot_start_ready_to_drive_return_flow.png" width="280" alt="Bot start and entry prompt" /><br/>
       <sub>Bot start: ready-to-drive prompt</sub>
     </td>
-    <td align="center">
-      <img src="docs/screenshots/bot_car_selected_mandatory_inspection.png" width="220" alt="Car selected and mandatory inspection prompt" /><br/>
+    <td align="center" valign="top" width="50%">
+      <img src="docs/screenshots/bot_car_selected_mandatory_inspection.png" width="280" alt="Car selected and mandatory inspection prompt" /><br/>
       <sub>Car selected: mandatory inspection CTA</sub>
     </td>
   </tr>
   <tr>
-    <td align="center">
-      <img src="docs/screenshots/miniapp_required_photos_progress_0_of_4.png" width="220" alt="Mini App required photos stage" /><br/>
+    <td align="center" valign="top" width="50%">
+      <img src="docs/screenshots/miniapp_required_photos_progress_0_of_4.png" width="280" alt="Mini App required photos stage" /><br/>
       <sub>Mini App: required photos stage (0/4)</sub>
     </td>
-    <td align="center">
-      <img src="docs/screenshots/miniapp_rear_slot_accepted_no_damage.png" width="220" alt="Rear slot accepted" /><br/>
+    <td align="center" valign="top" width="50%">
+      <img src="docs/screenshots/miniapp_rear_slot_accepted_no_damage.png" width="280" alt="Rear slot accepted" /><br/>
       <sub>Required slot accepted</sub>
     </td>
   </tr>
   <tr>
-    <td align="center">
-      <img src="docs/screenshots/miniapp_rear_slot_accepted_launch_damage_analysis.png" width="220" alt="Launch damage analysis step" /><br/>
+    <td align="center" valign="top" width="50%">
+      <img src="docs/screenshots/miniapp_rear_slot_accepted_launch_damage_analysis.png" width="280" alt="Launch damage analysis step" /><br/>
       <sub>Explicit launch of segmentation</sub>
     </td>
-    <td align="center">
-      <img src="docs/screenshots/miniapp_damage_segmentation_masks_autoconfirmed.png" width="320" alt="Segmentation result with masks" /><br/>
+    <td align="center" valign="top" width="50%">
+      <img src="docs/screenshots/miniapp_damage_segmentation_masks_autoconfirmed.png" width="280" alt="Segmentation result with masks" /><br/>
       <sub>Damage review with mask contours</sub>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" colspan="2">
-      <img src="docs/screenshots/bot_post_inspection_trip_finished_admin_case.png" width="560" alt="Final bot message after inspection completion" /><br/>
-      <sub>After completion: trip result, dispute/admin state, and return to main menu</sub>
     </td>
   </tr>
 </table>
