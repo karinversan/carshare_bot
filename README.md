@@ -131,19 +131,16 @@ What these screenshots validate in product terms:
 
 ## Models used
 
-| Component | Model | Role | Where it is defined |
+| Component | Model | Role | Latest metrics (aggregated) |
 |---|---|---|---|
-| Quality gate | **EfficientNet-B0** | binary accept / reject quality classification | `ml/quality_view/configs/quality_gate_config.json` |
-| View validation | **EfficientNet-B0** | 5-class viewpoint / validity classification | `ml/quality_view/configs/view_validation_config.json` |
-| Legacy QV experiment | **EfficientNet-B0 multitask** | joint quality + viewpoint prediction experiment | `ml/quality_view/configs/efficientnet_b0_multitask.yaml` |
-| Damage segmentation baseline | **YOLOv8s-seg** | segmentation of scratches / dents / cracks / broken parts | `ml/damage_seg/configs/yolo_seg_v1.yaml`, `ml/damage_seg/configs/yolo_seg_v2.json` |
-| Latest evaluated external artifact | **YOLO11n-seg checkpoint** | external checkpoint referenced by the latest quality report | `ml/evaluation/reports/model_quality_latest.json` |
+| Quality gate | **EfficientNet-B0** | binary accept / reject quality classification | Accuracy **0.9213** · Macro F1 **0.9212** · Reject precision **0.9318** · Reject recall **0.9091** |
+| View validation | **EfficientNet-B0** | 5-class viewpoint / validity classification | Accuracy **0.9448** · Macro F1 **0.9444** · F1: `front_valid` **0.9436**, `rear_valid` **0.9610**, `side_valid` **0.9460**, `angled_invalid` **0.8983**, `other_invalid` **0.9732** |
+| Latest evaluated external artifact | **YOLO11n-seg checkpoint** | externally trained checkpoint referenced by latest quality report | Used as latest evaluated artifact in paired quality report |
 
 ### Model notes
 
-- The current runtime loader supports **split EfficientNet-B0 classifiers** for quality gate and view validation, and also keeps compatibility with an older multitask EfficientNet-B0 checkpoint.
-- The damage-seg training configs inside the repo are built around **Ultralytics YOLO segmentation** baselines, primarily `yolov8s-seg.pt`.
-- The latest aggregated evaluation report references an **external YOLO11n segmentation checkpoint** as the active evaluated artifact, which is why the repo currently shows both YOLOv8-seg training configs and a YOLO11n-based result in reports.
+- The current runtime loader supports **split EfficientNet-B0 classifiers** for quality gate and view validation.
+- The latest aggregated evaluation report references an **external YOLO11n segmentation checkpoint** as the active evaluated artifact.
 
 ---
 
@@ -293,47 +290,6 @@ The inference boundary supports multiple modes:
 - Airflow DAGs:
   `dataset_ingestion`, `dataset_validation`, `train_quality_view_model`,
   `train_damage_seg_model`, `evaluate_models`, `register_best_model`, `generate_eval_report`
-
----
-
-## Results
-
-Latest aggregated metrics from `ml/evaluation/reports/model_quality_latest.json`:
-
-| Component | Metric | Value |
-|---|---|---:|
-| Quality gate | Accuracy | **0.9213** |
-| Quality gate | Macro F1 | **0.9212** |
-| Quality gate | Reject precision | **0.9318** |
-| Quality gate | Reject recall | **0.9091** |
-| View validation | Accuracy | **0.9448** |
-| View validation | Macro F1 | **0.9444** |
-| Damage segmentation | Mask mAP@50 | **0.6718** |
-| Damage segmentation | Mask mAP@50-95 | **0.4889** |
-| Damage segmentation | Precision | **0.7142** |
-| Damage segmentation | Recall | **0.6818** |
-
-Per-class F1 for view validation:
-
-| Class | F1 |
-|---|---:|
-| `front_valid` | **0.9436** |
-| `rear_valid` | **0.9610** |
-| `side_valid` | **0.9460** |
-| `angled_invalid` | **0.8983** |
-| `other_invalid` | **0.9732** |
-
-Interpretation:
-
-- the **quality gate** is already strong enough for a demo workflow and keeps false rejects under reasonable control;
-- the **view validator** is the most stable classifier in the current stack;
-- the **damage segmentation** result is the most experimental part and depends strongly on which checkpoint is active.
-
-Detailed reports:
-
-- `ml/quality_view/reports/quality_gate_test_report.json`
-- `ml/quality_view/reports/view_validation_test_report.json`
-- `ml/evaluation/reports/model_quality_latest.json`
 
 ---
 
