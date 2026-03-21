@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from apps.api_service.app.db import models
 from apps.api_service.app.db.base import Base
 from apps.api_service.app.services.inspection_service import (
+    confirm_photo_set,
     create_inspection,
     finalize_inspection,
     run_damage_inference,
@@ -214,6 +215,7 @@ def test_auto_damage_decision_and_finalize_state(monkeypatch):
         result = run_initial_checks(db, inspection, row, slot)
         assert result["accepted"] is True
 
+    confirm_photo_set(inspection)
     run_damage_inference(db, inspection)
     finalize_inspection(db, inspection)
     db.commit()
@@ -231,3 +233,71 @@ def test_auto_damage_decision_and_finalize_state(monkeypatch):
     ).scalars().all()
     source_types = {row.source_type for row in finals}
     assert source_types == {"predicted_auto_high", "predicted_auto_low"}
+
+
+def test_photo_set_confirmation_is_required_before_inference(monkeypatch):
+    from packages.shared_py.car_inspection.enums import InspectionStatus
+
+    db = _make_db()
+    stored: dict[tuple[str, str], bytes] = {}
+
+    monkeypatch.setattr(storage_service, "put_bytes", lambda bucket, key, data, content_type: stored.__setitem__((bucket, key), data))
+    monkeypatch.setattr(storage_service, "get_bytes", lambda bucket, key: stored[(bucket, key)])
+    monkeypatch.setattr(storage_service, "delete_object", lambda bucket, key: stored.pop((bucket, key), None))
+    monkeypatch.setattr(
+        inference_client,
+        "quality_view_predict",
+        lambda image_bytes, filename, expected_slot: {
+            "accepted": True,
+            "expected_slot": expected_slot,
+            "predicted_view": expected_slot,
+            "view_score": 0.98,
+            "quality_label": "good",
+            "quality_score": 0.98,
+            "rejection_reason": None,
+            "car_present": True,
+            "car_confidence": 0.97,
+            "car_bbox": {"x1": 0.1, "y1": 0.1, "x2": 0.9, "y2": 0.9},
+            "model_backend": "mock",
+        },
+    )
+    monkeypatch.setattr(
+        inference_client,
+        "damage_seg_predict",
+        lambda image_bytes, filename, slot_code: {
+            "model_name": "mock_seg",
+            "model_version": "1",
+            "inference_run_id": f"run-{slot_code}",
+            "overlay_png_b64": None,
+            "damage_instances": [],
+        },
+    )
+
+    inspection, _ = create_inspection(db, "VEH-001", "pre_trip", 7777, "user", "Karin")
+    for index, slot in enumerate(["front", "left_side", "right_side", "rear"], start=1):
+        row = upload_inspection_image(
+            db,
+            inspection,
+            _jpeg_bytes(40 * index),
+            f"{slot}.jpg",
+            "required_view",
+            slot,
+            index,
+        )
+        result = run_initial_checks(db, inspection, row, slot)
+        assert result["accepted"] is True
+
+    assert inspection.status == InspectionStatus.CAPTURING_OPTIONAL_PHOTOS.value
+
+    try:
+        run_damage_inference(db, inspection)
+    except ValueError as exc:
+        assert "not ready for damage inference" in str(exc)
+    else:
+        raise AssertionError("damage inference should require photo-set confirmation")
+
+    confirm_photo_set(inspection)
+    assert inspection.status == InspectionStatus.READY_FOR_INFERENCE.value
+
+    run_damage_inference(db, inspection)
+    assert inspection.status == InspectionStatus.READY_FOR_REVIEW.value

@@ -15,6 +15,7 @@ def test_inspection_types():
 def test_inspection_statuses_cover_flow():
     statuses = [s.value for s in InspectionStatus]
     assert "created" in statuses
+    assert "capturing_optional_photos" in statuses
     assert "finalized" in statuses
     assert "cancelled" in statuses
 

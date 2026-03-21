@@ -150,6 +150,9 @@ def test_e2e_smoke_pre_post_comparison_admin_case(monkeypatch):
             for idx, slot in enumerate(["front", "left_side", "right_side", "rear"], start=1):
                 _upload_and_accept_required(client, pre_inspection_id, slot, color=50 + idx * 20, capture_order=idx)
 
+            pre_confirm_resp = client.post(f"/inspections/{pre_inspection_id}/confirm-photo-set")
+            assert pre_confirm_resp.status_code == 200, pre_confirm_resp.text
+
             pre_inf_resp = client.post(f"/inspections/{pre_inspection_id}/run-damage-inference?force_sync=true")
             assert pre_inf_resp.status_code == 200, pre_inf_resp.text
 
@@ -180,6 +183,9 @@ def test_e2e_smoke_pre_post_comparison_admin_case(monkeypatch):
             phase["value"] = "post"
             for idx, slot in enumerate(["front", "left_side", "right_side", "rear"], start=1):
                 _upload_and_accept_required(client, post_inspection_id, slot, color=120 + idx * 15, capture_order=idx)
+
+            post_confirm_resp = client.post(f"/inspections/{post_inspection_id}/confirm-photo-set")
+            assert post_confirm_resp.status_code == 200, post_confirm_resp.text
 
             post_inf_resp = client.post(f"/inspections/{post_inspection_id}/run-damage-inference?force_sync=true")
             assert post_inf_resp.status_code == 200, post_inf_resp.text
@@ -215,3 +221,83 @@ def test_e2e_smoke_pre_post_comparison_admin_case(monkeypatch):
         app.dependency_overrides.clear()
         db.close()
 
+
+def test_image_level_extra_photos_are_blocked_after_photo_set_confirmation(monkeypatch):
+    db = _make_db()
+    store: dict[tuple[str, str], bytes] = {}
+
+    monkeypatch.setattr(
+        storage_service,
+        "put_bytes",
+        lambda bucket, key, data, content_type: store.__setitem__((bucket, key), data),
+    )
+    monkeypatch.setattr(storage_service, "get_bytes", lambda bucket, key: store[(bucket, key)])
+    monkeypatch.setattr(storage_service, "delete_object", lambda bucket, key: store.pop((bucket, key), None))
+    monkeypatch.setattr(
+        storage_service,
+        "presigned_url",
+        lambda bucket, key, expires=3600: f"http://test.local/s3/{bucket}/{key}",
+    )
+    monkeypatch.setattr(
+        inference_client,
+        "quality_view_predict",
+        lambda image_bytes, filename, expected_slot: {
+            "accepted": True,
+            "expected_slot": expected_slot,
+            "predicted_view": expected_slot,
+            "view_score": 0.98,
+            "quality_label": "good",
+            "quality_score": 0.98,
+            "rejection_reason": None,
+            "car_present": True,
+            "car_confidence": 0.98,
+            "car_bbox": {"x1": 0.1, "y1": 0.1, "x2": 0.9, "y2": 0.9},
+            "model_backend": "mock",
+        },
+    )
+
+    app.dependency_overrides[get_db] = _override_db(db)
+    try:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            create_resp = client.post(
+                "/inspections",
+                json={
+                    "vehicle_id": "VEH-EXTRA-001",
+                    "inspection_type": "pre_trip",
+                    "user_telegram_id": 889001,
+                    "username": "karin",
+                    "first_name": "Karin",
+                },
+            )
+            assert create_resp.status_code == 200, create_resp.text
+            inspection_id = create_resp.json()["data"]["inspection_id"]
+
+            for idx, slot in enumerate(["front", "left_side", "right_side", "rear"], start=1):
+                _upload_and_accept_required(client, inspection_id, slot, color=80 + idx * 10, capture_order=idx)
+
+            miniapp_before = client.get(f"/miniapp/inspections/{inspection_id}")
+            assert miniapp_before.status_code == 200, miniapp_before.text
+            front_image_id = next(
+                image["image_id"]
+                for image in miniapp_before.json()["data"]["images"]
+                if image["slot_code"] == "front"
+            )
+
+            extra_before = client.post(
+                f"/miniapp/images/{front_image_id}/attach-closeup",
+                files={"file": ("front-extra.jpg", _jpeg_bytes(180), "image/jpeg")},
+            )
+            assert extra_before.status_code == 200, extra_before.text
+
+            confirm_resp = client.post(f"/inspections/{inspection_id}/confirm-photo-set")
+            assert confirm_resp.status_code == 200, confirm_resp.text
+
+            extra_after = client.post(
+                f"/miniapp/images/{front_image_id}/attach-closeup",
+                files={"file": ("front-extra-2.jpg", _jpeg_bytes(200), "image/jpeg")},
+            )
+            assert extra_after.status_code == 409, extra_after.text
+            assert extra_after.json()["detail"]["code"] == "inspection_stage_conflict"
+    finally:
+        app.dependency_overrides.clear()
+        db.close()

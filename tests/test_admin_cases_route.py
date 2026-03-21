@@ -123,3 +123,35 @@ def test_admin_case_detail_handles_orphan_assignee_without_500():
     finally:
         app.dependency_overrides.clear()
         db.close()
+
+
+def test_admin_case_can_be_assigned_and_status_updated():
+    db = _make_db()
+    case_id = _seed_case_with_orphan_assignee(db)
+    app.dependency_overrides[get_db] = _override_db(db)
+    try:
+        client = TestClient(app, raise_server_exceptions=False)
+
+        assign_response = client.post(
+            f"/admin-cases/{case_id}/assign",
+            json={"first_name": "Verifier"},
+        )
+        assert assign_response.status_code == 200, assign_response.text
+        assign_data = assign_response.json()["data"]
+        assert assign_data["assignee_name"] == "Verifier"
+
+        status_response = client.post(
+            f"/admin-cases/{case_id}/status",
+            json={"status": "in_review", "resolved_note": "Берём кейс в работу"},
+        )
+        assert status_response.status_code == 200, status_response.text
+        assert status_response.json()["data"]["status"] == "in_review"
+
+        detail_response = client.get(f"/admin-cases/{case_id}")
+        assert detail_response.status_code == 200, detail_response.text
+        detail_data = detail_response.json()["data"]
+        assert detail_data["status"] == "in_review"
+        assert detail_data["assignee_name"] == "Verifier"
+    finally:
+        app.dependency_overrides.clear()
+        db.close()
