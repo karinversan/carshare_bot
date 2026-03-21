@@ -411,79 +411,6 @@ The bot supports contextual menu behavior:
 
 ---
 
-## Repository structure
-
-```text
-apps/
-  api_service/         FastAPI product backend
-  bot_service/         Telegram bot service
-  miniapp-frontend/    React + Vite Telegram Mini App
-  admin-panel/         React + Vite admin UI
-  worker_service/      Celery worker
-
-services/
-  inference_service/   online ML inference boundary
-
-packages/
-  shared_py/           shared backend enums and contracts
-  shared-ts/           generated frontend types
-
-ml/
-  quality_view/        quality / viewpoint model training
-  damage_seg/          damage segmentation training
-  evaluation/          paired evaluation and reports
-  data/                local datasets and prepared manifests
-
-airflow/
-  dags/                offline ML pipelines
-
-infra/
-  compose/             local stack
-  docker/              service Dockerfiles
-
-scripts/
-  create_buckets.py
-  seed_demo_data.py
-  local_edge_proxy.py
-
-docs/
-  architecture/
-  api/
-  data/
-  deployment/
-  ml/
-  runbooks/
-
-tests/
-  backend / bot / inference / smoke tests
-```
-
-Detailed layout notes: `docs/architecture/repo-layout.md`
-
----
-
-## Data and model artifacts
-
-This repository is structured so that **code and configs live in Git**, while heavy local assets stay outside of version control.
-
-Not stored in Git:
-
-- local datasets in `ml/data/`
-- local training runs
-- model weights and large artifacts
-- `.env` and private credentials
-- generated frontend build output and local virtual environments
-
-Public bootstrap datasets referenced by the project:
-
-- **CarDD**
-- **TQVCD**
-- **CrashCar101** as augmentation source only
-
-Important caveat: these are research bootstrap datasets and do not fully reproduce real rental-inspection conditions. The intended long-term setup is a custom paired protocol with repeated inspections of the same vehicles.
-
----
-
 ## Demo walkthrough
 
 If the goal is to show engineering breadth, the cleanest walkthrough is:
@@ -497,22 +424,6 @@ If the goal is to show engineering breadth, the cleanest walkthrough is:
 7. Show the comparison result and created admin case.
 8. Resolve the case in the admin panel.
 9. Show Airflow DAGs, MLflow, and the `ml/` folder as the offline layer.
-
----
-
-## Key docs
-
-- `docs/architecture/architecture.md`
-- `docs/architecture/repo-layout.md`
-- `docs/api/api.md`
-- `docs/data/data.md`
-- `docs/ml/training.md`
-- `docs/ml/inference.md`
-- `docs/ml/mlops.md`
-- `docs/deployment/deployment.md`
-- `docs/known-limitations.md`
-- `docs/runbooks/e2e-smoke.md`
-- `docs/runbooks/prompt-gap-audit.md`
 
 ---
 
