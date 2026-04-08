@@ -301,6 +301,8 @@ The inference boundary supports multiple modes:
 cp .env.example .env
 ```
 
+`AUTH_ENABLED=true` is the secure default. Mini App auth now expects Telegram WebApp `initData`, and the admin panel expects `/auth/admin/login`. For browser-only debugging outside Telegram, temporarily set `AUTH_ENABLED=false` in `.env`.
+
 ### 2. Start the local stack
 
 ```bash
@@ -331,6 +333,8 @@ make bootstrap
 ### Backend / services
 
 ```bash
+uv sync
+make migrate
 make api
 make bot
 make worker

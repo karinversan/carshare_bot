@@ -2,11 +2,9 @@ import os
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from apps.api_service.app.db.base import Base
 from apps.api_service.app.db import models
 
 engine = create_engine(os.getenv("SYNC_DATABASE_URL", "postgresql+psycopg://postgres:postgres@localhost:5432/car_inspection"))
-Base.metadata.create_all(bind=engine)
 
 with Session(engine) as db:
     fleet = [

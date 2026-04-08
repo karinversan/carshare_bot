@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     # "weights" — load from ml/<module>/weights/ (requires torch, timm, ultralytics)
     # "mlflow" — load from MLflow model registry
     inference_backend: str = "mock"
+    require_real_inference: bool = False
 
     # MLflow settings (used when inference_backend == "mlflow")
     mlflow_tracking_uri: str = "http://localhost:5000"
@@ -37,6 +38,7 @@ class Settings(BaseSettings):
         has_torch = find_spec("torch") is not None
         has_ultralytics = find_spec("ultralytics") is not None
         deps_ready = has_torch and has_ultralytics
+        has_mlflow = find_spec("mlflow") is not None
 
         project_root = Path(__file__).resolve().parents[4]
         damage_weights_dir = project_root / "ml" / "damage_seg" / "weights"
@@ -78,15 +80,28 @@ class Settings(BaseSettings):
         # where torch stack is intentionally absent.
         if self.inference_backend == "weights":
             if not deps_ready:
+                if self.require_real_inference:
+                    raise ValueError("INFERENCE_BACKEND=weights requires torch and ultralytics to be installed")
                 self.inference_backend = "mock"
             elif configured_weight_path and not weight_file_exists:
+                if self.require_real_inference:
+                    raise ValueError(f"Configured DAMAGE_SEG_WEIGHTS_PATH does not exist: {configured_weight_path}")
                 self.inference_backend = "mock"
+            elif not weight_file_exists and self.require_real_inference:
+                raise ValueError("INFERENCE_BACKEND=weights requires a damage segmentation checkpoint")
+            return self
+
+        if self.inference_backend == "mlflow":
+            if self.require_real_inference and not has_mlflow:
+                raise ValueError("INFERENCE_BACKEND=mlflow requires mlflow to be installed")
             return self
 
         # In some envs duplicate INFERENCE_BACKEND vars leave backend="mock".
         # If deps and a valid checkpoint are present, prefer real weights.
         if self.inference_backend == "mock" and deps_ready and weight_file_exists:
             self.inference_backend = "weights"
+        elif self.require_real_inference:
+            raise ValueError("REQUIRE_REAL_INFERENCE=true but no usable real inference backend is available")
         return self
 
 

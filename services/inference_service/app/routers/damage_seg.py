@@ -54,6 +54,16 @@ def _normalize_damage_type(label: str) -> str:
     value = str(label).strip().lower().replace(" ", "_")
     return _DAMAGE_CLASS_ALIASES.get(value, value)
 
+
+def _bbox_polygon(bbox_norm: dict[str, float]) -> list[list[float]]:
+    return [
+        [bbox_norm["x1"], bbox_norm["y1"]],
+        [bbox_norm["x2"], bbox_norm["y1"]],
+        [bbox_norm["x2"], bbox_norm["y2"]],
+        [bbox_norm["x1"], bbox_norm["y2"]],
+    ]
+
+
 def _predict_real(image_pil, slot_code: str) -> dict:
     """Run trained YOLOv8s-seg model on image."""
     model, meta = get_seg_model()
@@ -200,8 +210,8 @@ def _predict_real(image_pil, slot_code: str) -> dict:
                             pass  # keep original
 
             if polygon_json is None:
-                # Segmentation endpoint must return mask-derived polygons only.
-                continue
+                polygon_json = _bbox_polygon(bbox_norm)
+                polygon_source = "bbox_fallback"
 
             instance = {
                 "damage_type": _normalize_damage_type(damage_classes[cls_idx]),

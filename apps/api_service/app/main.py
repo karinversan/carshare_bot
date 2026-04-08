@@ -3,11 +3,6 @@ import logging
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import inspect, text
-
-from apps.api_service.app.db.base import Base
-from apps.api_service.app.db import models as db_models  # noqa: F401
-from apps.api_service.app.db.session import engine
 from apps.api_service.app.core.config import settings
 from apps.api_service.app.api.routes.health import router as health_router
 from apps.api_service.app.api.routes.assets import router as assets_router
@@ -21,32 +16,8 @@ from apps.api_service.app.api.routes.mobile import router as mobile_router
 logger = logging.getLogger(__name__)
 
 
-def _ensure_runtime_columns() -> None:
-    try:
-        inspector = inspect(engine)
-        with engine.begin() as conn:
-            manual_columns = {column["name"] for column in inspector.get_columns("manual_damages")}
-            if "note" not in manual_columns:
-                conn.execute(text("ALTER TABLE manual_damages ADD COLUMN note TEXT"))
-
-            final_columns = {column["name"] for column in inspector.get_columns("inspection_damages_final")}
-            if "note" not in final_columns:
-                conn.execute(text("ALTER TABLE inspection_damages_final ADD COLUMN note TEXT"))
-
-            image_columns = {column["name"] for column in inspector.get_columns("inspection_images")}
-            if "note" not in image_columns:
-                conn.execute(text("ALTER TABLE inspection_images ADD COLUMN note TEXT"))
-    except Exception as exc:
-        logger.warning("Skipping optional runtime schema update: %s", exc)
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    try:
-        Base.metadata.create_all(bind=engine)
-        _ensure_runtime_columns()
-    except Exception as exc:
-        logger.warning("Skipping database initialization at startup: %s", exc)
     yield
 
 
