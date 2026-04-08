@@ -2,18 +2,16 @@ import React, { useEffect, useState } from "react";
 import ReactDOM from "react-dom/client";
 
 import { assignAdminCase, fetchAdminCase, fetchAdminCases, updateAdminCaseStatus } from "./api";
-import { EvidenceCard } from "./components/EvidenceCard";
+import { CaseActionBar } from "./components/CaseActionBar";
+import { CaseMatchesList } from "./components/CaseMatchesList";
+import { CaseOverview } from "./components/CaseOverview";
+import { CaseQueueSidebar } from "./components/CaseQueueSidebar";
+import { DashboardHeader } from "./components/DashboardHeader";
 import { LoginScreen } from "./components/LoginScreen";
+import { ReviewerPanel } from "./components/ReviewerPanel";
 import { cl, type CaseDetail, type CaseSummary } from "./domain";
 import { useAdminSession } from "./useAdminSession";
-import {
-  caseStatusLabel,
-  formatDate,
-  matchColor,
-  matchStatusLabel,
-  slotLabel,
-  statusColor,
-} from "./utils";
+import { caseStatusLabel } from "./utils";
 
 function App() {
   const {
@@ -164,86 +162,7 @@ function App() {
         width: "100%",
       }}
     >
-      <header
-        style={{
-          padding: isPhone ? "18px 14px 14px" : "24px 24px 18px",
-          maxWidth: 1560,
-          margin: "0 auto",
-          width: "100%",
-          boxSizing: "border-box",
-        }}
-      >
-        <div
-          style={{
-            display: "flex",
-            flexDirection: isPhone ? "column" : "row",
-            justifyContent: "space-between",
-            alignItems: isPhone ? "stretch" : "center",
-            gap: 12,
-            minWidth: 0,
-          }}
-        >
-          <div>
-            <div
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 10,
-                background: "rgba(255,255,255,0.82)",
-                borderRadius: 999,
-                padding: "10px 14px",
-                boxShadow: cl.shadow,
-                marginBottom: 12,
-              }}
-            >
-              <span style={{ width: 10, height: 10, borderRadius: "50%", background: cl.green }} />
-              <span style={{ fontSize: 13, fontWeight: 800 }}>Очередь кейсов активна</span>
-            </div>
-            <h1 style={{ margin: 0, fontSize: isPhone ? 28 : 34, letterSpacing: "-0.06em", lineHeight: 1.02 }}>
-              Проверка новых повреждений
-            </h1>
-            <p style={{ margin: "10px 0 0", color: cl.muted, maxWidth: 620, fontSize: isPhone ? 15 : 16, lineHeight: 1.45 }}>
-              Рабочая панель для спорных кейсов после завершения поездки. Назначьте кейс на себя, сравните осмотр до и
-              после поездки, проверьте крупные планы и примите итоговое решение.
-            </p>
-          </div>
-          <div style={{ display: "flex", gap: 10, flexDirection: isPhone ? "column" : "row" }}>
-            <button
-              onClick={() => void loadCases()}
-              style={{
-                background: "#15202B",
-                color: "#fff",
-                borderRadius: 24,
-                padding: "14px 18px",
-                fontSize: 13,
-                fontWeight: 800,
-                alignSelf: isPhone ? "stretch" : "auto",
-                width: isPhone ? "100%" : "auto",
-                flexShrink: 0,
-              }}
-            >
-              Обновить очередь
-            </button>
-            <button
-              onClick={handleLogout}
-              style={{
-                background: "#FFFFFF",
-                color: cl.text,
-                borderRadius: 24,
-                padding: "14px 18px",
-                fontSize: 13,
-                fontWeight: 800,
-                border: `1px solid ${cl.border}`,
-                alignSelf: isPhone ? "stretch" : "auto",
-                width: isPhone ? "100%" : "auto",
-                flexShrink: 0,
-              }}
-            >
-              Выйти
-            </button>
-          </div>
-        </div>
-      </header>
+      <DashboardHeader isPhone={isPhone} onLogout={handleLogout} onRefresh={() => void loadCases()} />
 
       <main
         style={{
@@ -279,85 +198,16 @@ function App() {
             minWidth: 0,
           }}
         >
-          <aside
-            style={{
-              background: cl.card,
-              border: `1px solid ${cl.border}`,
-              borderRadius: 34,
-              boxShadow: cl.shadow,
-              overflow: "hidden",
-              minHeight: isTablet ? "auto" : "calc(100vh - 190px)",
-              minWidth: 0,
-            }}
-          >
-            <div style={{ padding: 18, borderBottom: `1px solid ${cl.border}` }}>
-              <div style={{ fontSize: 12, color: cl.muted, fontWeight: 800, marginBottom: 10 }}>Фильтр по статусу</div>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                {["", "open", "in_review", "resolved_confirmed", "resolved_no_issue", "dismissed"].map((value) => (
-                  <button
-                    key={value || "all"}
-                    onClick={() => setFilter(value)}
-                    style={{
-                      padding: "8px 12px",
-                      borderRadius: 999,
-                      background: filter === value ? "#15202B" : "#F2F6F8",
-                      color: filter === value ? "#fff" : cl.text,
-                      fontSize: 12,
-                      fontWeight: 800,
-                      maxWidth: "100%",
-                      overflowWrap: "anywhere",
-                    }}
-                  >
-                    {value ? caseStatusLabel(value) : "Все"}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div style={{ maxHeight: isTablet ? "none" : "calc(100vh - 280px)", overflowY: isTablet ? "visible" : "auto" }}>
-              {cases.length === 0 && !loading ? (
-                <div style={{ padding: 28, color: cl.muted }}>Очередь пуста.</div>
-              ) : null}
-              {cases.map((item) => (
-                <button
-                  key={item.id}
-                  onClick={() => void loadCase(item.id)}
-                  style={{
-                    width: "100%",
-                    background: selectedCase?.id === item.id ? "#F4FFF7" : "transparent",
-                    padding: 16,
-                    borderBottom: `1px solid ${cl.border}`,
-                    textAlign: "left",
-                    minWidth: 0,
-                  }}
-                >
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", marginBottom: 8 }}>
-                    <strong style={{ lineHeight: 1.35, minWidth: 0, overflowWrap: "anywhere" }}>{item.title}</strong>
-                    <span
-                      style={{
-                        background: statusColor(item.status),
-                        color: "#fff",
-                        borderRadius: 999,
-                        padding: "6px 9px",
-                        fontSize: 10,
-                        fontWeight: 900,
-                        textTransform: "uppercase",
-                        whiteSpace: isPhone ? "normal" : "nowrap",
-                        overflowWrap: "anywhere",
-                        textAlign: "center",
-                        flexShrink: 0,
-                      }}
-                    >
-                      {caseStatusLabel(item.status)}
-                    </span>
-                  </div>
-                  <div style={{ fontSize: 13, color: cl.muted, lineHeight: 1.45, overflowWrap: "anywhere" }}>{item.summary}</div>
-                  <div style={{ marginTop: 10, fontSize: 11, color: cl.muted }}>
-                    Авто {item.vehicle_id} • {item.assignee_name ? `Назначен: ${item.assignee_name}` : "Без исполнителя"} • {formatDate(item.opened_at)}
-                  </div>
-                </button>
-              ))}
-            </div>
-          </aside>
+          <CaseQueueSidebar
+            cases={cases}
+            filter={filter}
+            isPhone={isPhone}
+            isTablet={isTablet}
+            loading={loading}
+            onFilterChange={setFilter}
+            onSelectCase={(caseId) => void loadCase(caseId)}
+            selectedCaseId={selectedCase?.id}
+          />
 
           <section
             style={{
@@ -377,223 +227,19 @@ function App() {
               </div>
             ) : (
               <>
-                <div
-                  style={{
-                    display: "flex",
-                    flexDirection: isPhone ? "column" : "row",
-                    justifyContent: "space-between",
-                    gap: 16,
-                    alignItems: isPhone ? "stretch" : "flex-start",
-                    marginBottom: 18,
-                    minWidth: 0,
-                  }}
-                >
-                  <div style={{ minWidth: 0 }}>
-                    <h2 style={{ margin: 0, fontSize: isPhone ? 24 : 30, letterSpacing: "-0.05em", overflowWrap: "anywhere" }}>
-                      {selectedCase.title}
-                    </h2>
-                    <p style={{ margin: "8px 0 0", color: cl.muted }}>
-                      Авто {selectedCase.vehicle_id} • {selectedCase.summary}
-                    </p>
-                  </div>
-                  <span
-                    style={{
-                      background: statusColor(selectedCase.status),
-                      color: "#fff",
-                      borderRadius: 999,
-                      padding: "8px 12px",
-                      fontSize: 12,
-                      fontWeight: 900,
-                      textTransform: "uppercase",
-                      alignSelf: isPhone ? "flex-start" : "auto",
-                      maxWidth: "100%",
-                      overflowWrap: "anywhere",
-                    }}
-                  >
-                    {caseStatusLabel(selectedCase.status)}
-                  </span>
-                </div>
-
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: isPhone ? "minmax(0, 1fr)" : "repeat(3, minmax(0, 1fr))",
-                    gap: 12,
-                    marginBottom: 18,
-                  }}
-                >
-                  <div style={{ background: "#F2FFF7", borderRadius: 28, padding: 16, border: `1px solid ${cl.border}` }}>
-                    <div style={{ fontSize: 30, fontWeight: 900, color: cl.green }}>{selectedCase.comparison?.matched_count ?? 0}</div>
-                    <div style={{ fontSize: 12, color: cl.muted }}>Совпало с осмотром до поездки</div>
-                  </div>
-                  <div style={{ background: "#FFF8ED", borderRadius: 28, padding: 16, border: `1px solid ${cl.border}` }}>
-                    <div style={{ fontSize: 30, fontWeight: 900, color: cl.orange }}>{selectedCase.comparison?.possible_new_count ?? 0}</div>
-                    <div style={{ fontSize: 12, color: cl.muted }}>Вероятно новые</div>
-                  </div>
-                  <div style={{ background: "#FFF2F1", borderRadius: 28, padding: 16, border: `1px solid ${cl.border}` }}>
-                    <div style={{ fontSize: 30, fontWeight: 900, color: cl.red }}>{selectedCase.comparison?.new_confirmed_count ?? 0}</div>
-                    <div style={{ fontSize: 12, color: cl.muted }}>Подтверждённо новые</div>
-                  </div>
-                </div>
-
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: isTablet ? "minmax(0, 1fr)" : "minmax(0, 1fr) 260px",
-                    gap: 16,
-                    marginBottom: 18,
-                    alignItems: "start",
-                  }}
-                >
-                  <div
-                    style={{
-                      background: "#F7FBFC",
-                      border: `1px solid ${cl.border}`,
-                      borderRadius: 28,
-                      padding: 16,
-                      minWidth: 0,
-                    }}
-                  >
-                    <div style={{ fontSize: 12, fontWeight: 800, color: cl.muted, marginBottom: 10 }}>Назначение кейса</div>
-                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap", minWidth: 0 }}>
-                      <input
-                        value={assigneeName}
-                        onChange={(event) => setAssigneeName(event.target.value)}
-                        placeholder="Имя проверяющего"
-                        style={{
-                          flex: 1,
-                          minWidth: isPhone ? "100%" : 180,
-                          borderRadius: 20,
-                          border: `1px solid ${cl.border}`,
-                          padding: "12px 14px",
-                          boxSizing: "border-box",
-                        }}
-                      />
-                      <button
-                        onClick={() => void assignCase()}
-                        style={{
-                          background: "#15202B",
-                          color: "#fff",
-                          borderRadius: 20,
-                          padding: "12px 14px",
-                          fontWeight: 800,
-                          width: isPhone ? "100%" : "auto",
-                        }}
-                      >
-                        Назначить на себя
-                      </button>
-                    </div>
-                    <div style={{ marginTop: 10, fontSize: 13, color: cl.muted }}>
-                      Текущий исполнитель: <strong style={{ color: cl.text }}>{selectedCase.assignee_name || "не назначен"}</strong>
-                    </div>
-                  </div>
-                  <div
-                    style={{
-                      background: "#F7FBFC",
-                      border: `1px solid ${cl.border}`,
-                      borderRadius: 28,
-                      padding: 16,
-                      minWidth: 0,
-                    }}
-                  >
-                    <div style={{ fontSize: 12, fontWeight: 800, color: cl.muted, marginBottom: 10 }}>Комментарий по решению</div>
-                    <textarea
-                      value={note}
-                      onChange={(event) => setNote(event.target.value)}
-                      placeholder="Что показала проверка? Например: подтверждаем новую царапину на правом борту."
-                      style={{
-                        width: "100%",
-                        minHeight: 92,
-                        resize: "vertical",
-                        borderRadius: 20,
-                        border: `1px solid ${cl.border}`,
-                        padding: 12,
-                        boxSizing: "border-box",
-                      }}
-                    />
-                  </div>
-                </div>
-
-                <div style={{ display: "grid", gap: 14, marginBottom: 18 }}>
-                  {selectedCase.matches.map((match) => (
-                    <article
-                      key={match.id}
-                      style={{
-                        border: `1px solid ${cl.border}`,
-                        borderRadius: 30,
-                        padding: 16,
-                        background: "#FCFDFE",
-                        minWidth: 0,
-                      }}
-                    >
-                      <div
-                        style={{
-                          display: "flex",
-                          flexDirection: isPhone ? "column" : "row",
-                          justifyContent: "space-between",
-                          gap: 12,
-                          alignItems: isPhone ? "stretch" : "center",
-                          marginBottom: 14,
-                          minWidth: 0,
-                        }}
-                      >
-                        <div style={{ minWidth: 0 }}>
-                          <strong style={{ display: "block", marginBottom: 4 }}>{slotLabel(match.view_slot)}</strong>
-                          <span style={{ color: cl.muted, fontSize: 12 }}>
-                            Оценка совпадения: {(match.match_score * 100).toFixed(1)}%
-                          </span>
-                        </div>
-                        <span
-                          style={{
-                            background: matchColor(match.status),
-                            color: "#fff",
-                            borderRadius: 999,
-                            padding: "7px 10px",
-                            fontSize: 11,
-                            fontWeight: 900,
-                            textTransform: "uppercase",
-                            alignSelf: isPhone ? "flex-start" : "auto",
-                            maxWidth: "100%",
-                            overflowWrap: "anywhere",
-                          }}
-                        >
-                          {matchStatusLabel(match.status)}
-                        </span>
-                      </div>
-                      <div style={{ display: "grid", gridTemplateColumns: isPhone ? "minmax(0, 1fr)" : "1fr 1fr", gap: 12, minWidth: 0 }}>
-                        <EvidenceCard title="Осмотр до поездки" damage={match.pre_damage} />
-                        <EvidenceCard title="Осмотр после поездки" damage={match.post_damage} />
-                      </div>
-                    </article>
-                  ))}
-                </div>
-
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  <button
-                    onClick={() => void updateStatus("in_review")}
-                    style={{ background: cl.blue, color: "#fff", borderRadius: 20, padding: "12px 16px", fontWeight: 800, width: isPhone ? "100%" : "auto" }}
-                  >
-                    Взять в работу
-                  </button>
-                  <button
-                    onClick={() => void updateStatus("resolved_confirmed")}
-                    style={{ background: cl.green, color: "#fff", borderRadius: 20, padding: "12px 16px", fontWeight: 800, width: isPhone ? "100%" : "auto" }}
-                  >
-                    Подтвердить новое повреждение
-                  </button>
-                  <button
-                    onClick={() => void updateStatus("resolved_no_issue")}
-                    style={{ background: "#64748B", color: "#fff", borderRadius: 20, padding: "12px 16px", fontWeight: 800, width: isPhone ? "100%" : "auto" }}
-                  >
-                    Новых повреждений нет
-                  </button>
-                  <button
-                    onClick={() => void updateStatus("dismissed")}
-                    style={{ background: cl.red, color: "#fff", borderRadius: 20, padding: "12px 16px", fontWeight: 800, width: isPhone ? "100%" : "auto" }}
-                  >
-                    Отклонить кейс
-                  </button>
-                </div>
+                <CaseOverview caseDetail={selectedCase} isPhone={isPhone} />
+                <ReviewerPanel
+                  assigneeName={assigneeName}
+                  caseDetail={selectedCase}
+                  isPhone={isPhone}
+                  isTablet={isTablet}
+                  note={note}
+                  onAssign={() => void assignCase()}
+                  onAssigneeNameChange={setAssigneeName}
+                  onNoteChange={setNote}
+                />
+                <CaseMatchesList isPhone={isPhone} matches={selectedCase.matches} />
+                <CaseActionBar isPhone={isPhone} onUpdateStatus={(status) => void updateStatus(status)} />
               </>
             )}
             {loading ? <div style={{ marginTop: 16, color: cl.muted }}>Загрузка…</div> : null}
