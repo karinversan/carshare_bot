@@ -2,11 +2,8 @@ import { API } from "./config";
 import {
   SLOT_ORDER,
   type ApiErrorDetail,
-  type BBox,
-  type DamageTypeValue,
   type FinalizeResult,
   type InspectionData,
-  type SeverityValue,
 } from "./domain";
 import { readApiError } from "./utils";
 
@@ -48,15 +45,6 @@ export class InspectionClosedError extends Error {
     this.status = status;
   }
 }
-
-type CreateManualDamageInput = {
-  baseImageId: string;
-  bboxNorm: BBox;
-  damageType: DamageTypeValue;
-  inspectionId: string;
-  note?: string;
-  severityHint: SeverityValue;
-};
 
 async function readJson<T>(response: Response): Promise<T> {
   return response.json() as Promise<T>;
@@ -197,55 +185,6 @@ export async function reviewPredictedDamage(
 
   if (!response.ok) {
     throw new Error(await readApiError(response, "Не удалось сохранить решение", telegramInitData));
-  }
-}
-
-export async function createManualDamage(
-  apiFetch: MiniappApiFetch,
-  input: CreateManualDamageInput,
-  telegramInitData?: string,
-): Promise<void> {
-  const response = await apiFetch(`${API}/miniapp/damages/manual`, {
-    body: JSON.stringify({
-      base_image_id: input.baseImageId,
-      bbox_norm: input.bboxNorm,
-      damage_type: input.damageType,
-      inspection_session_id: input.inspectionId,
-      note: input.note || undefined,
-      severity_hint: input.severityHint,
-    }),
-    headers: { "Content-Type": "application/json" },
-    method: "POST",
-  });
-
-  if (!response.ok) {
-    throw new Error(await readApiError(response, "Не удалось сохранить добавленные вручную повреждения", telegramInitData));
-  }
-}
-
-export async function attachInspectionCloseup(
-  apiFetch: MiniappApiFetch,
-  file: File,
-  imageId: string,
-  telegramInitData?: string,
-  damageRefType?: "predicted_review" | "manual",
-  damageRefId?: string,
-): Promise<void> {
-  const form = new FormData();
-  form.append("file", file);
-
-  if (damageRefType && damageRefId) {
-    form.append("damage_ref_type", damageRefType);
-    form.append("damage_ref_id", damageRefId);
-  }
-
-  const response = await apiFetch(`${API}/miniapp/images/${imageId}/attach-closeup`, {
-    body: form,
-    method: "POST",
-  });
-
-  if (!response.ok) {
-    throw new Error(await readApiError(response, "Не удалось загрузить дополнительное фото", telegramInitData));
   }
 }
 

@@ -2,10 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 
 import {
-  attachInspectionCloseup,
   attachInspectionExtraPhoto,
   confirmInspectionPhotoSet,
-  createManualDamage,
   DamageNotFoundError,
   fetchInspectionData,
   finalizeInspectionSession,
@@ -17,30 +15,24 @@ import {
 } from "./api";
 import {
   AUTO_DECISION_LABELS,
+  type Closeup,
   DAMAGE_COLORS,
   DAMAGE_LABELS,
-  DAMAGE_TYPES,
   REVIEW_LABELS,
-  SEVERITY,
   SLOT_LABELS,
   SLOT_ORDER,
   SLOT_TIPS,
-  type BBox,
   type Damage,
-  type DraftManualDamage,
   type ExtraPhotoPreview,
   type FinalizeResult,
   type Img,
   type InspectionData,
   type LocalPreview,
-  type ManualDamage,
 } from "./domain";
 import { miniappStyles } from "./styles";
 import { tg } from "./telegram";
 import { useTelegramAuth } from "./useTelegramAuth";
 import {
-  centeredBox,
-  clamp,
   formatStatus,
   hexToRgba,
   humanizeRejectionReason,
@@ -49,7 +41,7 @@ import {
 
 function App() {
   const params = new URLSearchParams(window.location.search);
-  const [inspectionId, setInspectionId] = useState(params.get("inspection_id") || "");
+  const [inspectionId] = useState(params.get("inspection_id") || "");
   const { authError, authReady, authToken, authorizedFetch } = useTelegramAuth();
   const [data, setData] = useState<InspectionData | null>(null);
   const [error, setError] = useState("");
@@ -59,19 +51,10 @@ function App() {
   const [photosReviewConfirmed, setPhotosReviewConfirmed] = useState(false);
   const [slotFeedback, setSlotFeedback] = useState<Record<string, string>>({});
   const [localPreviews, setLocalPreviews] = useState<Record<string, LocalPreview | undefined>>({});
-  const [showOverlayByImage, setShowOverlayByImage] = useState<Record<string, boolean>>({});
-  const [manualModeByImage, setManualModeByImage] = useState<Record<string, boolean>>({});
-  const [manualType, setManualType] = useState<(typeof DAMAGE_TYPES)[number]>("scratch");
-  const [manualSeverity, setManualSeverity] = useState<(typeof SEVERITY)[number]>("small");
-  const [manualDrafts, setManualDrafts] = useState<DraftManualDamage[]>([]);
-  const [selectedDraftId, setSelectedDraftId] = useState<string | null>(null);
   const [uploadingSlot, setUploadingSlot] = useState<string | null>(null);
-  const [uploadingCloseupFor, setUploadingCloseupFor] = useState<string | null>(null);
-  const [uploadingImageCloseupFor, setUploadingImageCloseupFor] = useState<string | null>(null);
   const [uploadingExtraPhoto, setUploadingExtraPhoto] = useState(false);
   const [extraPhotoComment, setExtraPhotoComment] = useState("");
   const [extraPhotoPreview, setExtraPhotoPreview] = useState<ExtraPhotoPreview | null>(null);
-  const viewerRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const localPreviewsRef = useRef<Record<string, LocalPreview | undefined>>({});
 
   useEffect(() => {
@@ -121,18 +104,6 @@ function App() {
     }, {});
   }, [orderedImages]);
 
-  const draftsByImage = useMemo(() => {
-    return manualDrafts.reduce<Record<string, DraftManualDamage[]>>((acc, draft) => {
-      if (!acc[draft.image_id]) acc[draft.image_id] = [];
-      acc[draft.image_id].push(draft);
-      return acc;
-    }, {});
-  }, [manualDrafts]);
-  const selectedDraft = useMemo(
-    () => manualDrafts.find((draft) => draft.draft_id === selectedDraftId) || null,
-    [manualDrafts, selectedDraftId],
-  );
-
   const acceptedCount = data?.accepted_slots.length ?? 0;
   const captureComplete = !!data && acceptedCount === data.required_slots.length;
   const optionalPhotoStage = !!data && captureComplete && data.status === "capturing_optional_photos";
@@ -157,14 +128,6 @@ function App() {
     if (!tg?.MainButton) return;
     tg.MainButton.hide();
   }, [tg, data, captureComplete, finalizeResult]);
-
-  useEffect(() => {
-    if (!selectedDraftId) return;
-    const stillExists = manualDrafts.some((draft) => draft.draft_id === selectedDraftId);
-    if (!stillExists) {
-      setSelectedDraftId(null);
-    }
-  }, [manualDrafts, selectedDraftId]);
 
   async function loadInspection(id: string) {
     setLoading(true);
@@ -303,81 +266,6 @@ function App() {
     }
   }
 
-  function queueManualDamage(imageId: string, x: number, y: number) {
-    const bbox = centeredBox(x, y);
-    const draft: DraftManualDamage = {
-      draft_id: `${imageId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      image_id: imageId,
-      damage_type: manualType,
-      bbox_norm: bbox,
-      severity_hint: manualSeverity,
-      note: "",
-    };
-    setManualDrafts((current) => [...current, draft]);
-    setSelectedDraftId(draft.draft_id);
-  }
-
-  async function saveManualDrafts(image: Img) {
-    if (!data) return;
-    const imageDrafts = draftsByImage[image.image_id] || [];
-    if (!imageDrafts.length) return;
-    setBusy(true);
-    setError("");
-    try {
-      for (const draft of imageDrafts) {
-        await createManualDamage(
-          authorizedFetch,
-          {
-            baseImageId: image.image_id,
-            bboxNorm: draft.bbox_norm,
-            damageType: draft.damage_type,
-            inspectionId: data.inspection_id,
-            note: draft.note || undefined,
-            severityHint: draft.severity_hint,
-          },
-          tg?.initData,
-        );
-      }
-      setManualDrafts((current) => current.filter((draft) => draft.image_id !== image.image_id));
-      setSelectedDraftId(null);
-      setManualModeByImage((current) => ({ ...current, [image.image_id]: false }));
-      await loadInspection(data.inspection_id);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Не удалось сохранить добавленные вручную повреждения.";
-      setError(message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function attachCloseup(
-    imageId: string,
-    file: File,
-    damageRefType?: "predicted_review" | "manual",
-    damageRefId?: string,
-  ) {
-    const isImageLevel = !damageRefType || !damageRefId;
-    if (isImageLevel) {
-      setUploadingImageCloseupFor(imageId);
-    } else {
-      setUploadingCloseupFor(damageRefId);
-    }
-    setError("");
-    try {
-      await attachInspectionCloseup(authorizedFetch, file, imageId, tg?.initData, damageRefType, damageRefId);
-      if (data) await loadInspection(data.inspection_id);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Не удалось загрузить крупный план.";
-      setError(message);
-    } finally {
-      if (isImageLevel) {
-        setUploadingImageCloseupFor(null);
-      } else {
-        setUploadingCloseupFor(null);
-      }
-    }
-  }
-
   async function attachExtraPhoto(file: File, comment: string) {
     if (!data) return;
     const previewUrl = URL.createObjectURL(file);
@@ -438,32 +326,6 @@ function App() {
     } finally {
       setBusy(false);
     }
-  }
-
-  function onViewerTap(image: Img, event: React.MouseEvent<HTMLDivElement> | React.TouchEvent<HTMLDivElement>) {
-    if (!manualModeByImage[image.image_id]) return;
-    const viewer = viewerRefs.current[image.image_id];
-    if (!viewer) return;
-    const target = event.target as HTMLElement | null;
-    if (target?.closest("[data-draft-control='true']")) return;
-    const rect = viewer.getBoundingClientRect();
-    const point = "touches" in event ? event.touches[0] : event;
-    const x = clamp((point.clientX - rect.left) / rect.width, 0.05, 0.95);
-    const y = clamp((point.clientY - rect.top) / rect.height, 0.05, 0.95);
-    queueManualDamage(image.image_id, x, y);
-  }
-
-  function renderCloseups(closeups?: Closeup[]) {
-    if (!closeups?.length) return null;
-    return (
-      <div className="closeups">
-        {closeups.map((closeup) => (
-          <a key={closeup.image_id} href={closeup.raw_url} target="_blank" rel="noreferrer">
-            <img src={closeup.raw_url} alt="Close-up" loading="lazy" />
-          </a>
-        ))}
-      </div>
-    );
   }
 
   function renderExtraPhotoCards(closeups?: Closeup[]) {
@@ -571,59 +433,6 @@ function App() {
               : "Низкая уверенность: не учитывается автоматически."}
         </div>
       </div>
-    );
-  }
-
-  function renderManualDamage(image: Img, manualDamage: ManualDamage) {
-    const color = DAMAGE_COLORS[manualDamage.damage_type] || "#15202B";
-    return (
-      <div key={manualDamage.manual_damage_id} className="damage-card">
-        <div className="damage-head">
-          <div className="damage-title">
-            <div className="damage-icon" style={{ background: color }}>
-              РУЧ
-            </div>
-            <div>
-              <strong>{DAMAGE_LABELS[manualDamage.damage_type] || manualDamage.damage_type}</strong>
-              <span>Размер: {manualDamage.severity_hint || "не указан"}</span>
-            </div>
-          </div>
-          <div className="review-pill" style={{ background: "#15202B" }}>
-            Вручную
-          </div>
-        </div>
-        {manualDamage.note ? <div className="muted" style={{ marginTop: 10 }}>{manualDamage.note}</div> : null}
-        <div className="closeup-row" style={{ marginTop: 12 }}>
-          <label className="ghost-btn">
-            {uploadingCloseupFor === manualDamage.manual_damage_id ? "Загружаем..." : "Добавить крупный план"}
-            <input
-              hidden
-              type="file"
-              accept="image/*"
-              capture="environment"
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) {
-                  void attachCloseup(image.image_id, file, "manual", manualDamage.manual_damage_id);
-                }
-                event.currentTarget.value = "";
-              }}
-            />
-          </label>
-        </div>
-        {renderCloseups(manualDamage.closeups)}
-      </div>
-    );
-  }
-
-  function removeDraft(draftId: string) {
-    setManualDrafts((current) => current.filter((draft) => draft.draft_id !== draftId));
-    setSelectedDraftId((current) => (current === draftId ? null : current));
-  }
-
-  function updateDraft(draftId: string, patch: Partial<DraftManualDamage>) {
-    setManualDrafts((current) =>
-      current.map((draft) => (draft.draft_id === draftId ? { ...draft, ...patch } : draft)),
     );
   }
 

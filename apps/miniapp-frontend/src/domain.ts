@@ -89,21 +89,6 @@ export type ManualDamage = {
   severity_hint: string;
 };
 
-export const SEVERITY = ["small", "medium", "severe"] as const;
-export type SeverityValue = (typeof SEVERITY)[number];
-
-export const DAMAGE_TYPES = ["scratch", "dent", "crack", "broken_part"] as const;
-export type DamageTypeValue = (typeof DAMAGE_TYPES)[number];
-
-export type DraftManualDamage = {
-  bbox_norm: BBox;
-  damage_type: DamageTypeValue;
-  draft_id: string;
-  image_id: string;
-  note: string;
-  severity_hint: SeverityValue;
-};
-
 // -------------------------------------------------------------------------- //
 //                                  CONSTANTS                                 //
 // -------------------------------------------------------------------------- //
