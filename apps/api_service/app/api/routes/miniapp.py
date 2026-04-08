@@ -208,18 +208,33 @@ def get_miniapp_inspection(
     payload_images = []
     valid_damage_types = {damage.value for damage in DamageType}
     ui_min_confidence = 0.1
+    required_images = [
+        img for img in images
+        if img.image_type == "required_view" and img.accepted
+    ]
+    required_image_ids = [img.id for img in required_images]
+
+    predicted_rows = db.execute(
+        select(models.PredictedDamage, models.DamageReview)
+        .join(models.DamageReview, models.DamageReview.predicted_damage_id == models.PredictedDamage.id)
+        .where(models.PredictedDamage.inspection_image_id.in_(required_image_ids))
+    ).all() if required_image_ids else []
+    predicted_by_image_id: dict[uuid.UUID, list[tuple[models.PredictedDamage, models.DamageReview]]] = {}
+    for pred, review in predicted_rows:
+        predicted_by_image_id.setdefault(pred.inspection_image_id, []).append((pred, review))
+
+    manual_rows = db.execute(
+        select(models.ManualDamage).where(models.ManualDamage.base_image_id.in_(required_image_ids))
+    ).scalars().all() if required_image_ids else []
+    manuals_by_image_id: dict[uuid.UUID, list[models.ManualDamage]] = {}
+    for manual in manual_rows:
+        manuals_by_image_id.setdefault(manual.base_image_id, []).append(manual)
 
     for img in images:
         if img.image_type != "required_view" or not img.accepted:
             continue
-        preds = db.execute(
-            select(models.PredictedDamage, models.DamageReview)
-            .join(models.DamageReview, models.DamageReview.predicted_damage_id == models.PredictedDamage.id)
-            .where(models.PredictedDamage.inspection_image_id == img.id)
-        ).all()
-        manuals = db.execute(
-            select(models.ManualDamage).where(models.ManualDamage.base_image_id == img.id)
-        ).scalars().all()
+        preds = predicted_by_image_id.get(img.id, [])
+        manuals = manuals_by_image_id.get(img.id, [])
         predicted_payload = []
         for pred, review in preds:
             if review.review_status == ReviewStatus.REJECTED.value:
