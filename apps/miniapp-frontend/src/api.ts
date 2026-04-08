@@ -27,13 +27,6 @@ type TelegramAuthResponse = {
   access_token: string;
 };
 
-export class DamageNotFoundError extends Error {
-  constructor() {
-    super("Это повреждение уже обновлено после пересъёмки. Список синхронизирован.");
-    this.name = "DamageNotFoundError";
-  }
-}
-
 export class InspectionClosedError extends Error {
   inspectionId: string;
   status: string;
@@ -164,27 +157,6 @@ export async function confirmInspectionPhotoSet(
 
   if (!response.ok) {
     throw new Error(await readApiError(response, "Не удалось подтвердить набор фото", telegramInitData));
-  }
-}
-
-export async function reviewPredictedDamage(
-  action: "confirm" | "reject" | "uncertain",
-  apiFetch: MiniappApiFetch,
-  damageId: string,
-  telegramInitData?: string,
-): Promise<void> {
-  const response = await apiFetch(`${API}/miniapp/damages/${damageId}/${action}`, {
-    body: JSON.stringify({}),
-    headers: { "Content-Type": "application/json" },
-    method: "POST",
-  });
-
-  if (response.status === 404) {
-    throw new DamageNotFoundError();
-  }
-
-  if (!response.ok) {
-    throw new Error(await readApiError(response, "Не удалось сохранить решение", telegramInitData));
   }
 }
 
