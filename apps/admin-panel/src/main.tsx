@@ -1,234 +1,19 @@
 import React, { useEffect, useState } from "react";
 import ReactDOM from "react-dom/client";
 
-const API = (import.meta as any).env.VITE_API_BASE_URL || `${window.location.origin}/api`;
-const ADMIN_TOKEN_KEY = "car-inspection-admin-token";
-const ADMIN_EMAIL_KEY = "car-inspection-admin-email";
-
-type CaseSummary = {
-  id: string;
-  comparison_id: string;
-  vehicle_id: string;
-  status: string;
-  priority: string;
-  title: string;
-  summary: string;
-  opened_at: string;
-  assignee_name?: string | null;
-};
-
-type ImageAsset = {
-  image_id: string;
-  slot_code: string;
-  raw_url: string;
-};
-
-type CloseupAsset = {
-  image_id: string;
-  raw_url: string;
-  slot_code?: string;
-};
-
-type DamageAsset = {
-  damage_id: string;
-  damage_type: string;
-  severity_hint?: string | null;
-  note?: string | null;
-  image?: ImageAsset | null;
-  closeups?: CloseupAsset[];
-};
-
-type MatchDetail = {
-  id: string;
-  view_slot: string;
-  status: string;
-  match_score: number;
-  pre_damage?: DamageAsset | null;
-  post_damage?: DamageAsset | null;
-};
-
-type CaseDetail = {
-  id: string;
-  vehicle_id: string;
-  status: string;
-  title: string;
-  summary: string;
-  assignee_name?: string | null;
-  comparison: {
-    matched_count?: number;
-    possible_new_count?: number;
-    new_confirmed_count?: number;
-  };
-  matches: MatchDetail[];
-};
-
-const cl = {
-  bg: "#EFF4F2",
-  card: "#FFFFFF",
-  text: "#10202E",
-  muted: "#6D7781",
-  border: "rgba(16, 32, 46, 0.08)",
-  shadow: "0 20px 42px rgba(16, 32, 46, 0.12)",
-  green: "#21C45A",
-  lime: "#B8FF2C",
-  blue: "#2563EB",
-  orange: "#F59E0B",
-  red: "#EF4444",
-};
-
-const CASE_STATUS_LABELS: Record<string, string> = {
-  open: "Открыт",
-  in_review: "На проверке",
-  resolved_confirmed: "Подтверждено",
-  resolved_no_issue: "Без новых повреждений",
-  dismissed: "Отклонён",
-};
-
-const MATCH_STATUS_LABELS: Record<string, string> = {
-  matched_existing: "Совпадает с осмотром до поездки",
-  possible_match: "Похожее совпадение",
-  possible_new: "Вероятно новое",
-  new_confirmed: "Новое подтверждённое",
-  not_visible_enough: "Недостаточно видно",
-  requires_admin_review: "Нужна проверка",
-};
-
-const SLOT_LABELS: Record<string, string> = {
-  front: "Перед",
-  left_side: "Левый бок",
-  right_side: "Правый бок",
-  rear: "Зад",
-};
-
-const DAMAGE_LABELS: Record<string, string> = {
-  scratch: "Царапина",
-  dent: "Вмятина",
-  crack: "Трещина",
-  broken_part: "Сломанная деталь",
-};
-
-const SEVERITY_LABELS: Record<string, string> = {
-  small: "Малое",
-  medium: "Среднее",
-  severe: "Сильное",
-};
-
-function statusColor(status: string) {
-  if (status === "open") return cl.orange;
-  if (status === "in_review") return cl.blue;
-  if (status === "resolved_confirmed") return cl.green;
-  if (status === "resolved_no_issue") return "#64748B";
-  if (status === "dismissed") return cl.red;
-  return "#94A3B8";
-}
-
-function matchColor(status: string) {
-  if (status === "matched_existing") return cl.green;
-  if (status === "possible_new") return cl.orange;
-  if (status === "new_confirmed") return cl.red;
-  return "#64748B";
-}
-
-function caseStatusLabel(value: string) {
-  return CASE_STATUS_LABELS[value] || value.replace(/_/g, " ");
-}
-
-function matchStatusLabel(value: string) {
-  return MATCH_STATUS_LABELS[value] || value.replace(/_/g, " ");
-}
-
-function slotLabel(value?: string | null) {
-  if (!value) return "Неизвестный ракурс";
-  return SLOT_LABELS[value] || value.replace(/_/g, " ");
-}
-
-function damageLabel(value?: string | null) {
-  if (!value) return "Повреждение";
-  return DAMAGE_LABELS[value] || value.replace(/_/g, " ");
-}
-
-function severityLabel(value?: string | null) {
-  if (!value) return "Не указан";
-  return SEVERITY_LABELS[value] || value;
-}
-
-function formatDate(value?: string | null) {
-  if (!value) return "Без даты";
-  try {
-    return new Intl.DateTimeFormat("ru-RU", {
-      day: "2-digit",
-      month: "short",
-      hour: "2-digit",
-      minute: "2-digit",
-    }).format(new Date(value));
-  } catch {
-    return value;
-  }
-}
-
-async function readAdminError(response: Response, fallback: string): Promise<string> {
-  try {
-    const body = await response.json();
-    const detail = body?.detail;
-    if (typeof detail === "string" && detail) return detail;
-    if (detail?.message) return detail.message;
-    if (body?.message) return body.message;
-  } catch {
-    // ignore JSON parsing errors
-  }
-  return `${fallback} (HTTP ${response.status})`;
-}
-
-function EvidenceCard({ title, damage }: { title: string; damage?: DamageAsset | null }) {
-  return (
-    <div
-      style={{
-        background: "#F8FBFC",
-        border: `1px solid ${cl.border}`,
-        borderRadius: 28,
-        padding: 14,
-        minHeight: 240,
-      }}
-    >
-      <div style={{ fontSize: 12, fontWeight: 800, color: cl.muted, marginBottom: 10 }}>{title}</div>
-      {damage?.image?.raw_url ? (
-        <>
-          <img
-            src={damage.image.raw_url}
-            alt={title}
-            style={{ width: "100%", aspectRatio: "4 / 3", borderRadius: 22, objectFit: "cover", marginBottom: 10 }}
-          />
-          <strong style={{ display: "block", marginBottom: 4 }}>{damageLabel(damage.damage_type)}</strong>
-          <div style={{ fontSize: 12, color: cl.muted }}>
-            Размер: {severityLabel(damage.severity_hint)}
-          </div>
-          {damage.note ? (
-            <div style={{ fontSize: 12, color: cl.text, marginTop: 8, lineHeight: 1.4 }}>
-              Комментарий: {damage.note}
-            </div>
-          ) : null}
-          {damage.closeups?.length ? (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(72px, 1fr))", gap: 8, marginTop: 12 }}>
-              {damage.closeups.map((closeup) => (
-                <a
-                  key={closeup.image_id}
-                  href={closeup.raw_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  style={{ display: "block", borderRadius: 18, overflow: "hidden", border: `1px solid ${cl.border}` }}
-                >
-                  <img src={closeup.raw_url} alt="Крупный план" style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover" }} />
-                </a>
-              ))}
-            </div>
-          ) : null}
-        </>
-      ) : (
-        <div style={{ color: cl.muted, fontSize: 13 }}>Нет связанного изображения.</div>
-      )}
-    </div>
-  );
-}
+import { EvidenceCard } from "./components/EvidenceCard";
+import { LoginScreen } from "./components/LoginScreen";
+import { ADMIN_EMAIL_KEY, ADMIN_TOKEN_KEY, API } from "./config";
+import { cl, type CaseDetail, type CaseSummary } from "./domain";
+import {
+  caseStatusLabel,
+  formatDate,
+  matchColor,
+  matchStatusLabel,
+  readAdminError,
+  slotLabel,
+  statusColor,
+} from "./utils";
 
 function App() {
   const [authToken, setAuthToken] = useState(() => window.localStorage.getItem(ADMIN_TOKEN_KEY) || "");
@@ -389,83 +174,15 @@ function App() {
 
   if (!authToken) {
     return (
-      <div
-        style={{
-          minHeight: "100vh",
-          display: "grid",
-          placeItems: "center",
-          background: `linear-gradient(180deg, ${cl.lime} 0%, #D8FF7A 18%, ${cl.bg} 18%)`,
-          padding: 20,
-          fontFamily: '"SF Pro Display", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-        }}
-      >
-        <div
-          style={{
-            width: "100%",
-            maxWidth: 460,
-            background: cl.card,
-            border: `1px solid ${cl.border}`,
-            borderRadius: 34,
-            boxShadow: cl.shadow,
-            padding: 24,
-          }}
-        >
-          <div style={{ display: "inline-flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
-            <span style={{ width: 10, height: 10, borderRadius: "50%", background: cl.orange }} />
-            <span style={{ fontSize: 13, fontWeight: 800, color: cl.muted }}>Защищённый доступ</span>
-          </div>
-          <h1 style={{ margin: 0, fontSize: 32, letterSpacing: "-0.05em", lineHeight: 1.02 }}>Вход в админку</h1>
-          <p style={{ margin: "12px 0 20px", color: cl.muted, lineHeight: 1.5 }}>
-            Используйте админские учётные данные, чтобы просматривать спорные кейсы и менять итоговые статусы.
-          </p>
-          {authError ? (
-            <div
-              style={{
-                marginBottom: 14,
-                background: "#FFF1F0",
-                border: `1px solid rgba(239, 68, 68, 0.22)`,
-                borderRadius: 20,
-                padding: 12,
-                color: cl.red,
-                fontSize: 14,
-              }}
-            >
-              {authError}
-            </div>
-          ) : null}
-          <div style={{ display: "grid", gap: 12 }}>
-            <input
-              value={loginEmail}
-              onChange={(event) => setLoginEmail(event.target.value)}
-              placeholder="admin@example.com"
-              autoComplete="username"
-              style={{ borderRadius: 20, border: `1px solid ${cl.border}`, padding: "14px 16px" }}
-            />
-            <input
-              type="password"
-              value={loginPassword}
-              onChange={(event) => setLoginPassword(event.target.value)}
-              placeholder="Пароль"
-              autoComplete="current-password"
-              style={{ borderRadius: 20, border: `1px solid ${cl.border}`, padding: "14px 16px" }}
-            />
-            <button
-              onClick={() => void login()}
-              disabled={authLoading}
-              style={{
-                background: "#15202B",
-                color: "#fff",
-                borderRadius: 22,
-                padding: "14px 16px",
-                fontSize: 14,
-                fontWeight: 800,
-              }}
-            >
-              {authLoading ? "Входим..." : "Войти"}
-            </button>
-          </div>
-        </div>
-      </div>
+      <LoginScreen
+        authError={authError}
+        authLoading={authLoading}
+        loginEmail={loginEmail}
+        loginPassword={loginPassword}
+        onEmailChange={setLoginEmail}
+        onPasswordChange={setLoginPassword}
+        onSubmit={() => void login()}
+      />
     );
   }
 
