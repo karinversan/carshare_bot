@@ -1,7 +1,20 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 
-import { API } from "./config";
+import {
+  attachInspectionCloseup,
+  attachInspectionExtraPhoto,
+  confirmInspectionPhotoSet,
+  createManualDamage,
+  DamageNotFoundError,
+  fetchInspectionData,
+  finalizeInspectionSession,
+  InspectionClosedError,
+  reviewPredictedDamage,
+  runDamageInference,
+  runInitialInspectionChecks,
+  uploadRequiredView,
+} from "./api";
 import {
   AUTO_DECISION_LABELS,
   DAMAGE_COLORS,
@@ -12,7 +25,6 @@ import {
   SLOT_LABELS,
   SLOT_ORDER,
   SLOT_TIPS,
-  type ApiErrorDetail,
   type BBox,
   type Damage,
   type DraftManualDamage,
@@ -25,6 +37,7 @@ import {
 } from "./domain";
 import { miniappStyles } from "./styles";
 import { tg } from "./telegram";
+import { useTelegramAuth } from "./useTelegramAuth";
 import {
   centeredBox,
   clamp,
@@ -32,14 +45,12 @@ import {
   hexToRgba,
   humanizeRejectionReason,
   polygonToSvgPoints,
-  readApiError,
 } from "./utils";
 
 function App() {
   const params = new URLSearchParams(window.location.search);
   const [inspectionId, setInspectionId] = useState(params.get("inspection_id") || "");
-  const [authToken, setAuthToken] = useState<string | null>(null);
-  const [authReady, setAuthReady] = useState(false);
+  const { authError, authReady, authToken, authorizedFetch } = useTelegramAuth();
   const [data, setData] = useState<InspectionData | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -67,52 +78,13 @@ function App() {
     tg?.ready?.();
     tg?.expand?.();
   }, []);
+  const authResolved = authReady && (tg?.initData ? !!authToken : true);
 
   useEffect(() => {
-    let cancelled = false;
-
-    async function bootstrapAuth() {
-      if (!tg?.initData) {
-        if (!cancelled) {
-          setAuthReady(true);
-        }
-        return;
-      }
-      try {
-        const response = await fetch(`${API}/auth/telegram`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ init_data: tg.initData }),
-        });
-        if (!response.ok) {
-          throw new Error(await readApiError(response, "Не удалось подтвердить сессию Telegram", tg?.initData));
-        }
-        const json = await response.json();
-        if (!cancelled) {
-          setAuthToken(json.access_token);
-        }
-      } catch (err: any) {
-        if (!cancelled) {
-          setError(err.message || "Не удалось подтвердить сессию Telegram.");
-        }
-      } finally {
-        if (!cancelled) {
-          setAuthReady(true);
-        }
-      }
-    }
-
-    void bootstrapAuth();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (inspectionId && authReady) {
+    if (inspectionId && authResolved) {
       void loadInspection(inspectionId);
     }
-  }, [inspectionId, authReady, authToken]);
+  }, [inspectionId, authResolved]);
 
   useEffect(() => {
     localPreviewsRef.current = localPreviews;
@@ -194,45 +166,28 @@ function App() {
     }
   }, [manualDrafts, selectedDraftId]);
 
-  async function authorizedFetch(input: string, init: RequestInit = {}) {
-    const headers = new Headers(init.headers || undefined);
-    if (authToken) {
-      headers.set("Authorization", `Bearer ${authToken}`);
-    }
-    return fetch(input, { ...init, headers });
-  }
-
   async function loadInspection(id: string) {
     setLoading(true);
     setError("");
     try {
-      const response = await authorizedFetch(`${API}/miniapp/inspections/${id}`);
-      if (!response.ok) {
-        let detail: ApiErrorDetail | null = null;
-        try {
-          const json = await response.json();
-          detail = json?.detail ?? null;
-        } catch {
-          detail = null;
-        }
-        if (response.status === 409 && detail?.code === "inspection_closed") {
-          setData(null);
-          setFinalizeResult((current) =>
-            current ?? {
-              inspection_id: id,
-              status: detail?.status || "finalized",
-              canonical_damage_count: 0,
-            },
-          );
-          setError("Этот осмотр уже завершён и больше не доступен для редактирования.");
-          return;
-        }
-        throw new Error(`HTTP ${response.status}`);
+      const inspection = await fetchInspectionData(authorizedFetch, id, tg?.initData);
+      setData(inspection);
+    } catch (error) {
+      if (error instanceof InspectionClosedError) {
+        setData(null);
+        setFinalizeResult((current) =>
+          current ?? {
+            canonical_damage_count: 0,
+            inspection_id: id,
+            status: error.status,
+          },
+        );
+        setError(error.message);
+        return;
       }
-      const json = await response.json();
-      setData(json.data);
-    } catch (err: any) {
-      setError(err.message || "Не удалось загрузить инспекцию.");
+
+      const message = error instanceof Error ? error.message : "Не удалось загрузить инспекцию.";
+      setError(message);
     } finally {
       setLoading(false);
     }
@@ -247,28 +202,17 @@ function App() {
     setLocalPreviews((current) => ({ ...current, [slot]: { url: previewUrl, status: "uploading", source } }));
     setSlotFeedback((current) => ({ ...current, [slot]: "Проверяем фото…" }));
     try {
-      const uploadForm = new FormData();
-      uploadForm.append("file", file);
-      uploadForm.append("image_type", "required_view");
-      uploadForm.append("slot_code", slot);
-      uploadForm.append("capture_order", String(SLOT_ORDER.indexOf(slot) + 1));
-      const uploadResponse = await authorizedFetch(`${API}/inspections/${data.inspection_id}/images`, {
-        method: "POST",
-        body: uploadForm,
-      });
-      if (!uploadResponse.ok) throw new Error(await readApiError(uploadResponse, "Не удалось загрузить фото", tg?.initData));
-      const uploadJson = await uploadResponse.json();
-      const imageId = uploadJson.data.image_id;
+      const imageId = await uploadRequiredView(authorizedFetch, data.inspection_id, slot, file, tg?.initData);
+      const checkResult = await runInitialInspectionChecks(
+        authorizedFetch,
+        slot,
+        imageId,
+        data.inspection_id,
+        tg?.initData,
+      );
 
-      const checkResponse = await authorizedFetch(`${API}/inspections/${data.inspection_id}/run-initial-checks`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ image_id: imageId, expected_slot: slot }),
-      });
-      if (!checkResponse.ok) throw new Error(await readApiError(checkResponse, "Не удалось проверить фото", tg?.initData));
-      const checkJson = await checkResponse.json();
-      if (!checkJson.data.accepted) {
-        const reason = checkJson.data.rejection_reason || checkJson.data.quality_label || "Фото отклонено";
+      if (!checkResult.accepted) {
+        const reason = checkResult.rejection_reason || checkResult.quality_label || "Фото отклонено";
         setSlotFeedback((current) => ({ ...current, [slot]: humanizeRejectionReason(reason, slot) }));
         setLocalPreviews((current) => ({ ...current, [slot]: { url: previewUrl, status: "rejected", source } }));
         if (previousPreview?.url && previousPreview.url !== previewUrl) {
@@ -290,8 +234,9 @@ function App() {
       if (previousPreview?.url && previousPreview.url !== previewUrl) {
         URL.revokeObjectURL(previousPreview.url);
       }
-    } catch (err: any) {
-      setError(err.message || "Не удалось загрузить фото.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Не удалось загрузить фото.";
+      setError(message);
       setSlotFeedback((current) => ({ ...current, [slot]: "Ошибка загрузки" }));
       setLocalPreviews((current) => ({ ...current, [slot]: { url: previewUrl, status: "error", source } }));
       if (previousPreview?.url && previousPreview.url !== previewUrl) {
@@ -313,13 +258,11 @@ function App() {
     setPhotosReviewConfirmed(false);
     setError("");
     try {
-      const response = await authorizedFetch(`${API}/inspections/${currentInspectionId}/run-damage-inference?force_sync=true`, {
-        method: "POST",
-      });
-      if (!response.ok) throw new Error(await readApiError(response, "Не удалось запустить анализ", tg?.initData));
+      await runDamageInference(authorizedFetch, currentInspectionId, tg?.initData);
       await loadInspection(currentInspectionId);
-    } catch (err: any) {
-      setError(err.message || "Не удалось запустить анализ.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Не удалось запустить анализ.";
+      setError(message);
     } finally {
       setBusy(false);
     }
@@ -330,13 +273,11 @@ function App() {
     setBusy(true);
     setError("");
     try {
-      const response = await authorizedFetch(`${API}/inspections/${data.inspection_id}/confirm-photo-set`, {
-        method: "POST",
-      });
-      if (!response.ok) throw new Error(await readApiError(response, "Не удалось подтвердить набор фото", tg?.initData));
+      await confirmInspectionPhotoSet(authorizedFetch, data.inspection_id, tg?.initData);
       await loadInspection(data.inspection_id);
-    } catch (err: any) {
-      setError(err.message || "Не удалось подтвердить набор фото.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Не удалось подтвердить набор фото.";
+      setError(message);
     } finally {
       setBusy(false);
     }
@@ -346,20 +287,17 @@ function App() {
     setBusy(true);
     setError("");
     try {
-      const response = await authorizedFetch(`${API}/miniapp/damages/${damageId}/${action}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      });
-      if (response.status === 404) {
+      await reviewPredictedDamage(action, authorizedFetch, damageId, tg?.initData);
+      if (data) await loadInspection(data.inspection_id);
+    } catch (error) {
+      if (error instanceof DamageNotFoundError) {
         if (data) await loadInspection(data.inspection_id);
-        setError("Это повреждение уже обновлено после пересъёмки. Список синхронизирован.");
+        setError(error.message);
         return;
       }
-      if (!response.ok) throw new Error(await readApiError(response, "Не удалось сохранить решение", tg?.initData));
-      if (data) await loadInspection(data.inspection_id);
-    } catch (err: any) {
-      setError(err.message || "Не удалось сохранить решение.");
+
+      const message = error instanceof Error ? error.message : "Не удалось сохранить решение.";
+      setError(message);
     } finally {
       setBusy(false);
     }
@@ -387,26 +325,26 @@ function App() {
     setError("");
     try {
       for (const draft of imageDrafts) {
-        const response = await authorizedFetch(`${API}/miniapp/damages/manual`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            inspection_session_id: data.inspection_id,
-            base_image_id: image.image_id,
-            damage_type: draft.damage_type,
-            bbox_norm: draft.bbox_norm,
-            severity_hint: draft.severity_hint,
+        await createManualDamage(
+          authorizedFetch,
+          {
+            baseImageId: image.image_id,
+            bboxNorm: draft.bbox_norm,
+            damageType: draft.damage_type,
+            inspectionId: data.inspection_id,
             note: draft.note || undefined,
-          }),
-        });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            severityHint: draft.severity_hint,
+          },
+          tg?.initData,
+        );
       }
       setManualDrafts((current) => current.filter((draft) => draft.image_id !== image.image_id));
       setSelectedDraftId(null);
       setManualModeByImage((current) => ({ ...current, [image.image_id]: false }));
       await loadInspection(data.inspection_id);
-    } catch (err: any) {
-      setError(err.message || "Не удалось сохранить добавленные вручную повреждения.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Не удалось сохранить добавленные вручную повреждения.";
+      setError(message);
     } finally {
       setBusy(false);
     }
@@ -426,20 +364,11 @@ function App() {
     }
     setError("");
     try {
-      const form = new FormData();
-      form.append("file", file);
-      if (damageRefType && damageRefId) {
-        form.append("damage_ref_type", damageRefType);
-        form.append("damage_ref_id", damageRefId);
-      }
-      const response = await authorizedFetch(`${API}/miniapp/images/${imageId}/attach-closeup`, {
-        method: "POST",
-        body: form,
-      });
-      if (!response.ok) throw new Error(await readApiError(response, "Не удалось загрузить дополнительное фото", tg?.initData));
+      await attachInspectionCloseup(authorizedFetch, file, imageId, tg?.initData, damageRefType, damageRefId);
       if (data) await loadInspection(data.inspection_id);
-    } catch (err: any) {
-      setError(err.message || "Не удалось загрузить крупный план.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Не удалось загрузить крупный план.";
+      setError(message);
     } finally {
       if (isImageLevel) {
         setUploadingImageCloseupFor(null);
@@ -457,14 +386,7 @@ function App() {
     setExtraPhotoPreview({ url: previewUrl, status: "uploading" });
     setError("");
     try {
-      const form = new FormData();
-      form.append("file", file);
-      form.append("comment", comment.trim());
-      const response = await authorizedFetch(`${API}/miniapp/inspections/${data.inspection_id}/attach-extra-photo`, {
-        method: "POST",
-        body: form,
-      });
-      if (!response.ok) throw new Error(await readApiError(response, "Не удалось загрузить дополнительное фото", tg?.initData));
+      await attachInspectionExtraPhoto(authorizedFetch, comment, file, data.inspection_id, tg?.initData);
       await loadInspection(data.inspection_id);
       setPhotosReviewConfirmed(false);
       setExtraPhotoComment("");
@@ -473,8 +395,9 @@ function App() {
       if (previousPreview?.url && previousPreview.url !== previewUrl) {
         URL.revokeObjectURL(previousPreview.url);
       }
-    } catch (err: any) {
-      setError(err.message || "Не удалось загрузить дополнительное фото.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Не удалось загрузить дополнительное фото.";
+      setError(message);
       setExtraPhotoPreview({ url: previewUrl, status: "error" });
       if (previousPreview?.url && previousPreview.url !== previewUrl) {
         URL.revokeObjectURL(previousPreview.url);
@@ -493,20 +416,14 @@ function App() {
     setBusy(true);
     setError("");
     try {
-      const response = await authorizedFetch(`${API}/inspections/${data.inspection_id}/finalize`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ photos_review_confirmed: true }),
-      });
-      if (!response.ok) throw new Error(await readApiError(response, "Не удалось завершить осмотр", tg?.initData));
-      const json = await response.json();
-      setFinalizeResult(json.data);
-      setData((current) => (current ? { ...current, status: json.data.status } : current));
+      const result = await finalizeInspectionSession(authorizedFetch, data.inspection_id, tg?.initData);
+      setFinalizeResult(result);
+      setData((current) => (current ? { ...current, status: result.status } : current));
       const botPayload = JSON.stringify({
         action: "inspection_finalized",
-        inspection_id: json.data.inspection_id,
-        comparison_status: json.data.comparison_status,
-        canonical_damage_count: json.data.canonical_damage_count,
+        canonical_damage_count: result.canonical_damage_count,
+        comparison_status: result.comparison_status,
+        inspection_id: result.inspection_id,
       });
       tg?.sendData?.(botPayload);
       window.setTimeout(() => {
@@ -515,8 +432,9 @@ function App() {
       if (tg?.close) {
         window.setTimeout(() => tg.close(), 1600);
       }
-    } catch (err: any) {
-      setError(err.message || "Не удалось завершить осмотр.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Не удалось завершить осмотр.";
+      setError(message);
     } finally {
       setBusy(false);
     }
@@ -721,6 +639,7 @@ function App() {
   const vehicleBadge = data?.vehicle_plate || data?.vehicle_id || "Авто";
   const latestExtraPhotoUrl = extraPhotos.length ? extraPhotos[extraPhotos.length - 1].raw_url : "";
   const extraPreviewUrl = extraPhotoPreview?.url || latestExtraPhotoUrl;
+  const displayError = authError || error;
 
   return (
     <div className="app-shell">
@@ -758,10 +677,10 @@ function App() {
               </div>
           </div>
         ) : null}
-        {error ? (
+        {displayError ? (
           <div className="notice error">
             <strong>Что-то пошло не так</strong>
-            <p>{error}</p>
+            <p>{displayError}</p>
           </div>
         ) : null}
         {finalizeResult ? (

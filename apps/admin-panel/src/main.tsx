@@ -1,26 +1,33 @@
 import React, { useEffect, useState } from "react";
 import ReactDOM from "react-dom/client";
 
+import { assignAdminCase, fetchAdminCase, fetchAdminCases, updateAdminCaseStatus } from "./api";
 import { EvidenceCard } from "./components/EvidenceCard";
 import { LoginScreen } from "./components/LoginScreen";
-import { ADMIN_EMAIL_KEY, ADMIN_TOKEN_KEY, API } from "./config";
 import { cl, type CaseDetail, type CaseSummary } from "./domain";
+import { useAdminSession } from "./useAdminSession";
 import {
   caseStatusLabel,
   formatDate,
   matchColor,
   matchStatusLabel,
-  readAdminError,
   slotLabel,
   statusColor,
 } from "./utils";
 
 function App() {
-  const [authToken, setAuthToken] = useState(() => window.localStorage.getItem(ADMIN_TOKEN_KEY) || "");
-  const [loginEmail, setLoginEmail] = useState(() => window.localStorage.getItem(ADMIN_EMAIL_KEY) || "admin@example.com");
-  const [loginPassword, setLoginPassword] = useState("admin123");
-  const [authLoading, setAuthLoading] = useState(false);
-  const [authError, setAuthError] = useState("");
+  const {
+    apiFetch,
+    authError,
+    authLoading,
+    authToken,
+    login,
+    loginEmail,
+    loginPassword,
+    logout,
+    setLoginEmail,
+    setLoginPassword,
+  } = useAdminSession();
   const [cases, setCases] = useState<CaseSummary[]>([]);
   const [selectedCase, setSelectedCase] = useState<CaseDetail | null>(null);
   const [filter, setFilter] = useState("");
@@ -40,71 +47,35 @@ function App() {
   }, [filter, authToken]);
 
   useEffect(() => {
+    if (!authToken) {
+      setCases([]);
+      setSelectedCase(null);
+      setError("");
+    }
+  }, [authToken]);
+
+  useEffect(() => {
     const onResize = () => setViewportWidth(window.innerWidth);
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  async function apiFetch(input: string, init: RequestInit = {}) {
-    const headers = new Headers(init.headers || undefined);
-    if (authToken) {
-      headers.set("Authorization", `Bearer ${authToken}`);
-    }
-    const response = await fetch(input, { ...init, headers });
-    if (response.status === 401 || response.status === 403) {
-      setAuthToken("");
-      window.localStorage.removeItem(ADMIN_TOKEN_KEY);
-    }
-    return response;
-  }
-
-  async function login() {
-    setAuthLoading(true);
-    setAuthError("");
-    try {
-      const response = await fetch(`${API}/auth/admin/login`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email: loginEmail.trim(),
-          password: loginPassword,
-        }),
-      });
-      if (!response.ok) {
-        throw new Error(await readAdminError(response, "Не удалось войти в админку"));
-      }
-      const json = await response.json();
-      window.localStorage.setItem(ADMIN_TOKEN_KEY, json.access_token);
-      window.localStorage.setItem(ADMIN_EMAIL_KEY, loginEmail.trim());
-      setAuthToken(json.access_token);
-      setAuthError("");
-      setError("");
-    } catch (err: any) {
-      setAuthError(err.message || "Не удалось войти в админку.");
-    } finally {
-      setAuthLoading(false);
-    }
-  }
-
-  function logout() {
-    setAuthToken("");
+  function handleLogout() {
+    logout();
     setCases([]);
     setSelectedCase(null);
     setError("");
-    window.localStorage.removeItem(ADMIN_TOKEN_KEY);
   }
 
   async function loadCases() {
     setLoading(true);
     setError("");
     try {
-      const url = filter ? `${API}/admin-cases?status=${filter}` : `${API}/admin-cases`;
-      const response = await apiFetch(url);
-      if (!response.ok) throw new Error(await readAdminError(response, "Не удалось загрузить очередь кейсов"));
-      const json = await response.json();
-      setCases(json.data);
-    } catch (err: any) {
-      setError(err.message || "Не удалось загрузить очередь кейсов.");
+      const items = await fetchAdminCases(apiFetch, filter);
+      setCases(items);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Не удалось загрузить очередь кейсов.";
+      setError(message);
     } finally {
       setLoading(false);
     }
@@ -114,15 +85,14 @@ function App() {
     setLoading(true);
     setError("");
     try {
-      const response = await apiFetch(`${API}/admin-cases/${caseId}`);
-      if (!response.ok) throw new Error(await readAdminError(response, "Не удалось загрузить детали кейса"));
-      const json = await response.json();
-      setSelectedCase(json.data);
-      if (json.data.assignee_name) {
-        setAssigneeName(json.data.assignee_name);
+      const details = await fetchAdminCase(apiFetch, caseId);
+      setSelectedCase(details);
+      if (details.assignee_name) {
+        setAssigneeName(details.assignee_name);
       }
-    } catch (err: any) {
-      setError(err.message || "Не удалось загрузить детали кейса.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Не удалось загрузить детали кейса.";
+      setError(message);
     } finally {
       setLoading(false);
     }
@@ -133,16 +103,12 @@ function App() {
     setLoading(true);
     setError("");
     try {
-      const response = await apiFetch(`${API}/admin-cases/${selectedCase.id}/assign`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ first_name: assigneeName }),
-      });
-      if (!response.ok) throw new Error(await readAdminError(response, "Не удалось назначить кейс"));
+      await assignAdminCase(apiFetch, assigneeName, selectedCase.id);
       await loadCase(selectedCase.id);
       await loadCases();
-    } catch (err: any) {
-      setError(err.message || "Не удалось назначить кейс.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Не удалось назначить кейс.";
+      setError(message);
     } finally {
       setLoading(false);
     }
@@ -153,20 +119,18 @@ function App() {
     setLoading(true);
     setError("");
     try {
-      const response = await apiFetch(`${API}/admin-cases/${selectedCase.id}/status`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          status,
-          resolved_note: note || `Статус обновлён: ${caseStatusLabel(status)}`,
-        }),
-      });
-      if (!response.ok) throw new Error(await readAdminError(response, "Не удалось обновить статус кейса"));
+      await updateAdminCaseStatus(
+        apiFetch,
+        selectedCase.id,
+        note || `Статус обновлён: ${caseStatusLabel(status)}`,
+        status,
+      );
       setNote("");
       await loadCase(selectedCase.id);
       await loadCases();
-    } catch (err: any) {
-      setError(err.message || "Не удалось обновить статус кейса.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Не удалось обновить статус кейса.";
+      setError(message);
     } finally {
       setLoading(false);
     }
@@ -181,7 +145,10 @@ function App() {
         loginPassword={loginPassword}
         onEmailChange={setLoginEmail}
         onPasswordChange={setLoginPassword}
-        onSubmit={() => void login()}
+        onSubmit={() => {
+          setError("");
+          void login();
+        }}
       />
     );
   }
@@ -258,7 +225,7 @@ function App() {
               Обновить очередь
             </button>
             <button
-              onClick={logout}
+              onClick={handleLogout}
               style={{
                 background: "#FFFFFF",
                 color: cl.text,
