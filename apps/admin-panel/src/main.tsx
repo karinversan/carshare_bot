@@ -2,6 +2,8 @@ import React, { useEffect, useState } from "react";
 import ReactDOM from "react-dom/client";
 
 const API = (import.meta as any).env.VITE_API_BASE_URL || `${window.location.origin}/api`;
+const ADMIN_TOKEN_KEY = "car-inspection-admin-token";
+const ADMIN_EMAIL_KEY = "car-inspection-admin-email";
 
 type CaseSummary = {
   id: string;
@@ -164,6 +166,19 @@ function formatDate(value?: string | null) {
   }
 }
 
+async function readAdminError(response: Response, fallback: string): Promise<string> {
+  try {
+    const body = await response.json();
+    const detail = body?.detail;
+    if (typeof detail === "string" && detail) return detail;
+    if (detail?.message) return detail.message;
+    if (body?.message) return body.message;
+  } catch {
+    // ignore JSON parsing errors
+  }
+  return `${fallback} (HTTP ${response.status})`;
+}
+
 function EvidenceCard({ title, damage }: { title: string; damage?: DamageAsset | null }) {
   return (
     <div
@@ -216,6 +231,11 @@ function EvidenceCard({ title, damage }: { title: string; damage?: DamageAsset |
 }
 
 function App() {
+  const [authToken, setAuthToken] = useState(() => window.localStorage.getItem(ADMIN_TOKEN_KEY) || "");
+  const [loginEmail, setLoginEmail] = useState(() => window.localStorage.getItem(ADMIN_EMAIL_KEY) || "admin@example.com");
+  const [loginPassword, setLoginPassword] = useState("admin123");
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState("");
   const [cases, setCases] = useState<CaseSummary[]>([]);
   const [selectedCase, setSelectedCase] = useState<CaseDetail | null>(null);
   const [filter, setFilter] = useState("");
@@ -229,8 +249,10 @@ function App() {
   const isTablet = viewportWidth < 1180;
 
   useEffect(() => {
-    void loadCases();
-  }, [filter]);
+    if (authToken) {
+      void loadCases();
+    }
+  }, [filter, authToken]);
 
   useEffect(() => {
     const onResize = () => setViewportWidth(window.innerWidth);
@@ -238,13 +260,62 @@ function App() {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
+  async function apiFetch(input: string, init: RequestInit = {}) {
+    const headers = new Headers(init.headers || undefined);
+    if (authToken) {
+      headers.set("Authorization", `Bearer ${authToken}`);
+    }
+    const response = await fetch(input, { ...init, headers });
+    if (response.status === 401 || response.status === 403) {
+      setAuthToken("");
+      window.localStorage.removeItem(ADMIN_TOKEN_KEY);
+    }
+    return response;
+  }
+
+  async function login() {
+    setAuthLoading(true);
+    setAuthError("");
+    try {
+      const response = await fetch(`${API}/auth/admin/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: loginEmail.trim(),
+          password: loginPassword,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await readAdminError(response, "Не удалось войти в админку"));
+      }
+      const json = await response.json();
+      window.localStorage.setItem(ADMIN_TOKEN_KEY, json.access_token);
+      window.localStorage.setItem(ADMIN_EMAIL_KEY, loginEmail.trim());
+      setAuthToken(json.access_token);
+      setAuthError("");
+      setError("");
+    } catch (err: any) {
+      setAuthError(err.message || "Не удалось войти в админку.");
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  function logout() {
+    setAuthToken("");
+    setCases([]);
+    setSelectedCase(null);
+    setError("");
+    window.localStorage.removeItem(ADMIN_TOKEN_KEY);
+  }
+
   async function loadCases() {
     setLoading(true);
     setError("");
     try {
       const url = filter ? `${API}/admin-cases?status=${filter}` : `${API}/admin-cases`;
-      const response = await fetch(url);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const response = await apiFetch(url);
+      if (!response.ok) throw new Error(await readAdminError(response, "Не удалось загрузить очередь кейсов"));
       const json = await response.json();
       setCases(json.data);
     } catch (err: any) {
@@ -258,8 +329,8 @@ function App() {
     setLoading(true);
     setError("");
     try {
-      const response = await fetch(`${API}/admin-cases/${caseId}`);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const response = await apiFetch(`${API}/admin-cases/${caseId}`);
+      if (!response.ok) throw new Error(await readAdminError(response, "Не удалось загрузить детали кейса"));
       const json = await response.json();
       setSelectedCase(json.data);
       if (json.data.assignee_name) {
@@ -277,12 +348,12 @@ function App() {
     setLoading(true);
     setError("");
     try {
-      const response = await fetch(`${API}/admin-cases/${selectedCase.id}/assign`, {
+      const response = await apiFetch(`${API}/admin-cases/${selectedCase.id}/assign`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ first_name: assigneeName }),
       });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (!response.ok) throw new Error(await readAdminError(response, "Не удалось назначить кейс"));
       await loadCase(selectedCase.id);
       await loadCases();
     } catch (err: any) {
@@ -297,7 +368,7 @@ function App() {
     setLoading(true);
     setError("");
     try {
-      const response = await fetch(`${API}/admin-cases/${selectedCase.id}/status`, {
+      const response = await apiFetch(`${API}/admin-cases/${selectedCase.id}/status`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -305,7 +376,7 @@ function App() {
           resolved_note: note || `Статус обновлён: ${caseStatusLabel(status)}`,
         }),
       });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (!response.ok) throw new Error(await readAdminError(response, "Не удалось обновить статус кейса"));
       setNote("");
       await loadCase(selectedCase.id);
       await loadCases();
@@ -314,6 +385,88 @@ function App() {
     } finally {
       setLoading(false);
     }
+  }
+
+  if (!authToken) {
+    return (
+      <div
+        style={{
+          minHeight: "100vh",
+          display: "grid",
+          placeItems: "center",
+          background: `linear-gradient(180deg, ${cl.lime} 0%, #D8FF7A 18%, ${cl.bg} 18%)`,
+          padding: 20,
+          fontFamily: '"SF Pro Display", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+        }}
+      >
+        <div
+          style={{
+            width: "100%",
+            maxWidth: 460,
+            background: cl.card,
+            border: `1px solid ${cl.border}`,
+            borderRadius: 34,
+            boxShadow: cl.shadow,
+            padding: 24,
+          }}
+        >
+          <div style={{ display: "inline-flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+            <span style={{ width: 10, height: 10, borderRadius: "50%", background: cl.orange }} />
+            <span style={{ fontSize: 13, fontWeight: 800, color: cl.muted }}>Защищённый доступ</span>
+          </div>
+          <h1 style={{ margin: 0, fontSize: 32, letterSpacing: "-0.05em", lineHeight: 1.02 }}>Вход в админку</h1>
+          <p style={{ margin: "12px 0 20px", color: cl.muted, lineHeight: 1.5 }}>
+            Используйте админские учётные данные, чтобы просматривать спорные кейсы и менять итоговые статусы.
+          </p>
+          {authError ? (
+            <div
+              style={{
+                marginBottom: 14,
+                background: "#FFF1F0",
+                border: `1px solid rgba(239, 68, 68, 0.22)`,
+                borderRadius: 20,
+                padding: 12,
+                color: cl.red,
+                fontSize: 14,
+              }}
+            >
+              {authError}
+            </div>
+          ) : null}
+          <div style={{ display: "grid", gap: 12 }}>
+            <input
+              value={loginEmail}
+              onChange={(event) => setLoginEmail(event.target.value)}
+              placeholder="admin@example.com"
+              autoComplete="username"
+              style={{ borderRadius: 20, border: `1px solid ${cl.border}`, padding: "14px 16px" }}
+            />
+            <input
+              type="password"
+              value={loginPassword}
+              onChange={(event) => setLoginPassword(event.target.value)}
+              placeholder="Пароль"
+              autoComplete="current-password"
+              style={{ borderRadius: 20, border: `1px solid ${cl.border}`, padding: "14px 16px" }}
+            />
+            <button
+              onClick={() => void login()}
+              disabled={authLoading}
+              style={{
+                background: "#15202B",
+                color: "#fff",
+                borderRadius: 22,
+                padding: "14px 16px",
+                fontSize: 14,
+                fontWeight: 800,
+              }}
+            >
+              {authLoading ? "Входим..." : "Войти"}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -370,22 +523,41 @@ function App() {
               после поездки, проверьте крупные планы и примите итоговое решение.
             </p>
           </div>
-          <button
-            onClick={() => void loadCases()}
-            style={{
-              background: "#15202B",
-              color: "#fff",
-              borderRadius: 24,
-              padding: "14px 18px",
-              fontSize: 13,
-              fontWeight: 800,
-              alignSelf: isPhone ? "stretch" : "auto",
-              width: isPhone ? "100%" : "auto",
-              flexShrink: 0,
-            }}
-          >
-            Обновить очередь
-          </button>
+          <div style={{ display: "flex", gap: 10, flexDirection: isPhone ? "column" : "row" }}>
+            <button
+              onClick={() => void loadCases()}
+              style={{
+                background: "#15202B",
+                color: "#fff",
+                borderRadius: 24,
+                padding: "14px 18px",
+                fontSize: 13,
+                fontWeight: 800,
+                alignSelf: isPhone ? "stretch" : "auto",
+                width: isPhone ? "100%" : "auto",
+                flexShrink: 0,
+              }}
+            >
+              Обновить очередь
+            </button>
+            <button
+              onClick={logout}
+              style={{
+                background: "#FFFFFF",
+                color: cl.text,
+                borderRadius: 24,
+                padding: "14px 18px",
+                fontSize: 13,
+                fontWeight: 800,
+                border: `1px solid ${cl.border}`,
+                alignSelf: isPhone ? "stretch" : "auto",
+                width: isPhone ? "100%" : "auto",
+                flexShrink: 0,
+              }}
+            >
+              Выйти
+            </button>
+          </div>
         </div>
       </header>
 

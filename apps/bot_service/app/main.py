@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Header, Request
+from fastapi import FastAPI, Header, HTTPException, Request
 
 from apps.bot_service.app import telegram_api as tg
 from apps.bot_service.app.api_client import api_client
@@ -512,16 +513,26 @@ async def telegram_webhook(
     request: Request,
     x_telegram_bot_api_secret_token: str | None = Header(default=None),
 ):
-    if settings.telegram_webhook_secret and x_telegram_bot_api_secret_token is not None:
-        if x_telegram_bot_api_secret_token != settings.telegram_webhook_secret:
-            logger.warning("Webhook secret mismatch: got token from Telegram, but accepting update in demo mode.")
+    if settings.telegram_webhook_secret:
+        if not x_telegram_bot_api_secret_token:
+            raise HTTPException(status_code=401, detail="Telegram webhook secret required")
+        if not hmac.compare_digest(x_telegram_bot_api_secret_token, settings.telegram_webhook_secret):
+            logger.warning("Rejected Telegram webhook with invalid secret.")
+            raise HTTPException(status_code=403, detail="Invalid Telegram webhook secret")
     update = await request.json()
     await process_update(update)
     return {"ok": True}
 
 
 @app.post("/internal/inspection-finalized")
-async def internal_inspection_finalized(request: Request):
+async def internal_inspection_finalized(
+    request: Request,
+    x_internal_service_token: str | None = Header(default=None),
+):
+    if not x_internal_service_token:
+        raise HTTPException(status_code=401, detail="Internal service token required")
+    if not hmac.compare_digest(x_internal_service_token, settings.internal_service_token):
+        raise HTTPException(status_code=403, detail="Invalid internal service token")
     body = await request.json()
     chat_id = int(body.get("chat_id") or 0)
     inspection_id = str(body.get("inspection_id") or "").strip()

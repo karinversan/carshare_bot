@@ -12,6 +12,7 @@ from apps.worker_service.app.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 API_BASE_URL = os.getenv("API_BASE_URL") or os.getenv("API_SERVICE_URL", "http://api-service:8000")
+INTERNAL_SERVICE_TOKEN = os.getenv("INTERNAL_SERVICE_TOKEN", "change-me-internal")
 
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=10)
@@ -28,6 +29,7 @@ def run_damage_inference_task(self, inspection_id: str):
         logger.info("Starting damage inference for inspection %s", inspection_id)
         resp = httpx.post(
             f"{API_BASE_URL}/inspections/{inspection_id}/run-damage-inference?force_sync=true",
+            headers={"X-Internal-Service-Token": INTERNAL_SERVICE_TOKEN},
             timeout=180.0,
         )
         resp.raise_for_status()
@@ -46,6 +48,7 @@ def run_damage_inference_task(self, inspection_id: str):
             httpx.post(
                 f"{API_BASE_URL}/inspections/{inspection_id}/mark-failed",
                 json={"reason": str(e)},
+                headers={"X-Internal-Service-Token": INTERNAL_SERVICE_TOKEN},
                 timeout=10.0,
             )
         except Exception:
@@ -65,6 +68,7 @@ def run_comparison_task(self, post_session_id: str):
         resp = httpx.post(
             f"{API_BASE_URL}/comparisons/run",
             json={"post_session_id": post_session_id},
+            headers={"X-Internal-Service-Token": INTERNAL_SERVICE_TOKEN},
             timeout=120.0,
         )
         resp.raise_for_status()

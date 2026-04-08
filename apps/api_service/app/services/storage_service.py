@@ -1,4 +1,7 @@
 import logging
+import hashlib
+import hmac
+import time
 from urllib.parse import quote
 
 import boto3
@@ -99,10 +102,19 @@ class StorageService:
         except EndpointConnectionError as e:
             logger.warning("Cannot connect to S3/MinIO during delete %s/%s: %s", bucket, key, e)
 
+    def _asset_signature(self, bucket: str, key: str, expires_at: int) -> str:
+        secret = (settings.asset_url_secret or settings.jwt_secret).encode("utf-8")
+        payload = f"{bucket}\n{key}\n{expires_at}".encode("utf-8")
+        return hmac.new(secret, payload, hashlib.sha256).hexdigest()
+
     def presigned_url(self, bucket: str, key: str, expires: int = 3600) -> str:
-        del expires
-        endpoint = (settings.s3_external_endpoint_url or settings.s3_endpoint_url).rstrip("/")
-        return f"{endpoint}/{bucket}/{quote(key, safe='/')}"
+        expires_at = int(time.time()) + max(60, expires)
+        signature = self._asset_signature(bucket, key, expires_at)
+        api_base = str(settings.public_api_base_url or "").strip().rstrip("/")
+        path = f"/s3/{bucket}/{quote(key, safe='/')}?exp={expires_at}&sig={signature}"
+        if api_base:
+            return f"{api_base}{path}"
+        return path
 
 
 storage_service = StorageService()

@@ -5,6 +5,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 import httpx
 
+from apps.api_service.app.core.auth import (
+    AuthUser,
+    ensure_inspection_access,
+    require_auth_or_internal,
+    require_internal_service,
+)
 from apps.api_service.app.db.session import get_db
 from apps.api_service.app.db import models
 from apps.api_service.app.schemas.inspections import (
@@ -45,15 +51,24 @@ def _notify_bot_inspection_finalized(
         "inspection_id": str(inspection.id),
         "comparison_status": comparison_status,
     }
-    endpoints = [
-        "http://infra-bot-1:8001/internal/inspection-finalized",
-        "http://host.docker.internal:8001/internal/inspection-finalized",
-    ]
+    endpoints = []
+    for candidate in (
+        settings.bot_service_base_url,
+        "http://bot-service:8001",
+        "http://host.docker.internal:8001",
+    ):
+        normalized = str(candidate or "").strip().rstrip("/")
+        if normalized and normalized not in endpoints:
+            endpoints.append(normalized)
 
     for endpoint in endpoints:
         try:
             with httpx.Client(timeout=2.5) as client:
-                response = client.post(endpoint, json=payload)
+                response = client.post(
+                    f"{endpoint}/internal/inspection-finalized",
+                    json=payload,
+                    headers={"X-Internal-Service-Token": settings.internal_service_token},
+                )
                 if response.status_code < 400:
                     return
                 logger.warning("Bot finalize notify failed via %s: %s", endpoint, response.text)
@@ -72,8 +87,13 @@ def _ensure_inspection_open(inspection: models.InspectionSession) -> None:
             },
         )
 
+
 @router.post("")
-def create_inspection_route(payload: CreateInspectionRequest, db: Session = Depends(get_db)):
+def create_inspection_route(
+    payload: CreateInspectionRequest,
+    db: Session = Depends(get_db),
+    _: AuthUser = Depends(require_internal_service),
+):
     inspection, vehicle = create_inspection(
         db,
         vehicle_external_id=payload.vehicle_id,
@@ -92,11 +112,17 @@ def create_inspection_route(payload: CreateInspectionRequest, db: Session = Depe
         }
     }
 
+
 @router.get("/{inspection_id}")
-def get_inspection(inspection_id: uuid.UUID, db: Session = Depends(get_db)):
+def get_inspection(
+    inspection_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(require_auth_or_internal),
+):
     inspection = db.get(models.InspectionSession, inspection_id)
     if not inspection:
         raise HTTPException(status_code=404, detail="inspection not found")
+    ensure_inspection_access(inspection, current_user)
     vehicle = db.get(models.Vehicle, inspection.vehicle_id)
     images = db.execute(
         select(models.InspectionImage).where(models.InspectionImage.inspection_session_id == inspection.id)
@@ -133,10 +159,12 @@ async def upload_image(
     slot_code: str | None = Form(None),
     capture_order: int = Form(1),
     db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(require_auth_or_internal),
 ):
     inspection = db.get(models.InspectionSession, inspection_id)
     if not inspection:
         raise HTTPException(status_code=404, detail="inspection not found")
+    ensure_inspection_access(inspection, current_user)
     _ensure_inspection_open(inspection)
     file_bytes = await file.read()
     try:
@@ -160,10 +188,12 @@ def run_initial_checks_route(
     inspection_id: uuid.UUID,
     payload: RunInitialChecksRequest,
     db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(require_auth_or_internal),
 ):
     inspection = db.get(models.InspectionSession, inspection_id)
     if not inspection:
         raise HTTPException(status_code=404, detail="inspection not found")
+    ensure_inspection_access(inspection, current_user)
     _ensure_inspection_open(inspection)
     image_row = db.get(models.InspectionImage, payload.image_id)
     if not image_row or image_row.inspection_session_id != inspection.id:
@@ -192,10 +222,12 @@ def run_damage_inference_route(
     inspection_id: uuid.UUID,
     force_sync: bool = Query(False, description="Bypass async dispatch and run inference in-process."),
     db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(require_auth_or_internal),
 ):
     inspection = db.get(models.InspectionSession, inspection_id)
     if not inspection:
         raise HTTPException(status_code=404, detail="inspection not found")
+    ensure_inspection_access(inspection, current_user)
     _ensure_inspection_open(inspection)
     if inspection.status != InspectionStatus.READY_FOR_INFERENCE.value:
         raise HTTPException(
@@ -240,10 +272,15 @@ def run_damage_inference_route(
 
 
 @router.post("/{inspection_id}/confirm-photo-set")
-def confirm_photo_set_route(inspection_id: uuid.UUID, db: Session = Depends(get_db)):
+def confirm_photo_set_route(
+    inspection_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(require_auth_or_internal),
+):
     inspection = db.get(models.InspectionSession, inspection_id)
     if not inspection:
         raise HTTPException(status_code=404, detail="inspection not found")
+    ensure_inspection_access(inspection, current_user)
     _ensure_inspection_open(inspection)
 
     try:
@@ -262,7 +299,11 @@ def confirm_photo_set_route(inspection_id: uuid.UUID, db: Session = Depends(get_
 
 
 @router.post("/{inspection_id}/mark-failed")
-def mark_failed_route(inspection_id: uuid.UUID, db: Session = Depends(get_db)):
+def mark_failed_route(
+    inspection_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _: AuthUser = Depends(require_internal_service),
+):
     """Called by worker tasks when inference fails."""
     from packages.shared_py.car_inspection.enums import InspectionStatus
     inspection = db.get(models.InspectionSession, inspection_id)
@@ -273,10 +314,16 @@ def mark_failed_route(inspection_id: uuid.UUID, db: Session = Depends(get_db)):
     return {"data": {"inspection_id": inspection.id, "status": inspection.status}}
 
 @router.post("/{inspection_id}/finalize")
-def finalize_inspection_route(inspection_id: uuid.UUID, payload: FinalizeInspectionRequest, db: Session = Depends(get_db)):
+def finalize_inspection_route(
+    inspection_id: uuid.UUID,
+    payload: FinalizeInspectionRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(require_auth_or_internal),
+):
     inspection = db.get(models.InspectionSession, inspection_id)
     if not inspection:
         raise HTTPException(status_code=404, detail="inspection not found")
+    ensure_inspection_access(inspection, current_user)
     if not payload.photos_review_confirmed:
         raise HTTPException(
             status_code=400,

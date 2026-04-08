@@ -39,8 +39,14 @@ class APIClient:
             await self._client.aclose()
             self._client = None
 
+    def _internal_headers(self, headers: dict[str, str] | None = None) -> dict[str, str]:
+        merged = dict(headers or {})
+        merged.setdefault("X-Internal-Service-Token", settings.internal_service_token)
+        return merged
+
     async def _request(self, method: str, path: str, **kwargs) -> dict[str, Any]:
         client = await self._get_client()
+        kwargs["headers"] = self._internal_headers(kwargs.get("headers"))
         tried: list[str] = []
         if self._in_docker:
             base_candidates = [

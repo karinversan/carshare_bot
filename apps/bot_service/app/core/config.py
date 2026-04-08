@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     api_base_url: str = "http://localhost:8000"
     api_service_url: str = "http://localhost:8000"  # alias for docker networking
     public_api_base_url: str = ""
+    internal_service_token: str = "change-me-internal"
     miniapp_base_url: str = "http://localhost:5173"
     admin_panel_url: str = ""
     telegram_polling_enabled: bool = False

@@ -1,7 +1,10 @@
+import hashlib
+import hmac
 import mimetypes
+import time
 from urllib.parse import unquote
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Query, Response
 
 from apps.api_service.app.core.config import settings
 from apps.api_service.app.services.storage_service import StorageService, StorageServiceError
@@ -19,12 +22,26 @@ ALLOWED_BUCKETS = {
 
 
 @router.api_route("/s3/{bucket}/{object_key:path}", methods=["GET", "HEAD"])
-def serve_object(bucket: str, object_key: str):
+def serve_object(
+    bucket: str,
+    object_key: str,
+    exp: int = Query(..., description="Unix timestamp when signed URL expires."),
+    sig: str = Query(..., description="HMAC signature for the signed asset URL."),
+):
     bucket = bucket.strip("/")
     if bucket not in ALLOWED_BUCKETS:
         raise HTTPException(status_code=404, detail="bucket not found")
 
     normalized_key = unquote(object_key).lstrip("/")
+    if exp < int(time.time()):
+        raise HTTPException(status_code=403, detail="asset URL expired")
+
+    secret = (settings.asset_url_secret or settings.jwt_secret).encode("utf-8")
+    payload = f"{bucket}\n{normalized_key}\n{exp}".encode("utf-8")
+    expected_sig = hmac.new(secret, payload, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected_sig, sig):
+        raise HTTPException(status_code=403, detail="invalid asset signature")
+
     try:
         payload, content_type = StorageService().get_object(bucket, normalized_key)
     except StorageServiceError as exc:

@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 
+from apps.api_service.app.core.auth import AuthUser, require_admin
 from apps.api_service.app.db.session import get_db
 from apps.api_service.app.db import models
 from apps.api_service.app.schemas.admin import UpdateAdminCaseStatusRequest
@@ -64,7 +65,11 @@ def _closeups_for_final_damage(db: Session, final_damage: models.InspectionDamag
     ]
 
 @router.get("")
-def list_admin_cases(status: str | None = None, db: Session = Depends(get_db)):
+def list_admin_cases(
+    status: str | None = None,
+    db: Session = Depends(get_db),
+    _: AuthUser = Depends(require_admin),
+):
     stmt = select(models.AdminCase).order_by(models.AdminCase.opened_at.desc())
     if status:
         stmt = stmt.where(models.AdminCase.status == status)
@@ -86,7 +91,11 @@ def list_admin_cases(status: str | None = None, db: Session = Depends(get_db)):
     }
 
 @router.get("/{case_id}")
-def get_admin_case(case_id: uuid.UUID, db: Session = Depends(get_db)):
+def get_admin_case(
+    case_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _: AuthUser = Depends(require_admin),
+):
     case = db.get(models.AdminCase, case_id)
     if not case:
         raise HTTPException(status_code=404, detail="case not found")
@@ -139,7 +148,12 @@ def get_admin_case(case_id: uuid.UUID, db: Session = Depends(get_db)):
     }
 
 @router.post("/{case_id}/status")
-def update_case_status(case_id: uuid.UUID, payload: UpdateAdminCaseStatusRequest, db: Session = Depends(get_db)):
+def update_case_status(
+    case_id: uuid.UUID,
+    payload: UpdateAdminCaseStatusRequest,
+    db: Session = Depends(get_db),
+    _: AuthUser = Depends(require_admin),
+):
     case = db.get(models.AdminCase, case_id)
     if not case:
         raise HTTPException(status_code=404, detail="case not found")
@@ -153,15 +167,25 @@ def update_case_status(case_id: uuid.UUID, payload: UpdateAdminCaseStatusRequest
 
 
 @router.post("/{case_id}/assign")
-def assign_case(case_id: uuid.UUID, payload: dict, db: Session = Depends(get_db)):
+def assign_case(
+    case_id: uuid.UUID,
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(require_admin),
+):
     case = db.get(models.AdminCase, case_id)
     if not case:
         raise HTTPException(status_code=404, detail="case not found")
+    current_db_user = None
+    try:
+        current_db_user = db.get(models.User, uuid.UUID(current_user.user_id))
+    except (ValueError, TypeError):
+        current_db_user = None
     user = assign_admin_case(
         db,
         case=case,
-        first_name=payload.get("first_name"),
-        username=payload.get("username"),
+        first_name=payload.get("first_name") or (current_db_user.first_name if current_db_user else None),
+        username=payload.get("username") or (current_db_user.username if current_db_user else None),
     )
     db.commit()
     return {

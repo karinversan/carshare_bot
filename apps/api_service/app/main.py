@@ -8,6 +8,7 @@ from sqlalchemy import inspect, text
 from apps.api_service.app.db.base import Base
 from apps.api_service.app.db import models as db_models  # noqa: F401
 from apps.api_service.app.db.session import engine
+from apps.api_service.app.core.config import settings
 from apps.api_service.app.api.routes.health import router as health_router
 from apps.api_service.app.api.routes.assets import router as assets_router
 from apps.api_service.app.api.routes.inspections import router as inspections_router
@@ -53,8 +54,8 @@ app = FastAPI(title="Car Inspection API", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=settings.effective_cors_allowed_origins or ["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

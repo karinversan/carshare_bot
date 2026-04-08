@@ -4,6 +4,12 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 
+from apps.api_service.app.core.auth import (
+    AuthUser,
+    ensure_comparison_access,
+    require_auth_or_internal,
+    require_internal_service,
+)
 from apps.api_service.app.db.session import get_db
 from apps.api_service.app.db import models
 from apps.api_service.app.services.comparison_service import run_post_trip_comparison
@@ -16,7 +22,11 @@ class RunComparisonRequest(BaseModel):
 
 
 @router.post("/run")
-def run_comparison(payload: RunComparisonRequest, db: Session = Depends(get_db)):
+def run_comparison(
+    payload: RunComparisonRequest,
+    db: Session = Depends(get_db),
+    _: AuthUser = Depends(require_internal_service),
+):
     post_session_id = payload.post_session_id
     post_session = db.get(models.InspectionSession, post_session_id)
     if not post_session:
@@ -28,10 +38,15 @@ def run_comparison(payload: RunComparisonRequest, db: Session = Depends(get_db))
     return {"data": {"comparison_id": comparison.id, "status": comparison.status}}
 
 @router.get("/{comparison_id}")
-def get_comparison(comparison_id: uuid.UUID, db: Session = Depends(get_db)):
+def get_comparison(
+    comparison_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(require_auth_or_internal),
+):
     comparison = db.get(models.InspectionComparison, comparison_id)
     if not comparison:
         raise HTTPException(status_code=404, detail="comparison not found")
+    ensure_comparison_access(db, comparison, current_user)
     matches = db.execute(
         select(models.DamageMatch).where(models.DamageMatch.comparison_id == comparison.id)
     ).scalars().all()

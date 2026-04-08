@@ -3,6 +3,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from apps.api_service.app.core.auth import AuthUser, require_internal_service
 from apps.api_service.app.core.config import settings
 from apps.api_service.app.db.session import get_db
 from apps.api_service.app.schemas.mobile import (
@@ -27,6 +28,7 @@ def dashboard(
     username: str | None = Query(None),
     first_name: str | None = Query(None),
     db: Session = Depends(get_db),
+    _: AuthUser = Depends(require_internal_service),
 ):
     return {
         "data": get_dashboard(
@@ -40,7 +42,11 @@ def dashboard(
 
 
 @router.post("/trips/start")
-def start_trip(payload: StartRentalRequest, db: Session = Depends(get_db)):
+def start_trip(
+    payload: StartRentalRequest,
+    db: Session = Depends(get_db),
+    _: AuthUser = Depends(require_internal_service),
+):
     rental, inspection_id, created = start_rental(
         db,
         telegram_user_id=payload.telegram_user_id,
@@ -59,7 +65,12 @@ def start_trip(payload: StartRentalRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/trips/{trip_id}/return")
-def start_return(trip_id: uuid.UUID, payload: StartReturnInspectionRequest, db: Session = Depends(get_db)):
+def start_return(
+    trip_id: uuid.UUID,
+    payload: StartReturnInspectionRequest,
+    db: Session = Depends(get_db),
+    _: AuthUser = Depends(require_internal_service),
+):
     try:
         rental, inspection_id = start_return_inspection(
             db,
@@ -80,7 +91,11 @@ def start_return(trip_id: uuid.UUID, payload: StartReturnInspectionRequest, db: 
 
 
 @router.post("/trips/{trip_id}/cancel")
-def cancel_trip(trip_id: uuid.UUID, db: Session = Depends(get_db)):
+def cancel_trip(
+    trip_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _: AuthUser = Depends(require_internal_service),
+):
     try:
         rental = cancel_pending_rental(db, trip_id)
     except ValueError as exc:
@@ -95,7 +110,11 @@ def cancel_trip(trip_id: uuid.UUID, db: Session = Depends(get_db)):
 
 
 @router.get("/inspections/{inspection_id}/context")
-def inspection_context(inspection_id: uuid.UUID, db: Session = Depends(get_db)):
+def inspection_context(
+    inspection_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _: AuthUser = Depends(require_internal_service),
+):
     rental = get_rental_for_inspection(db, inspection_id)
     return {
         "data": {

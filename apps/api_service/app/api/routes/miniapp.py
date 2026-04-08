@@ -1,11 +1,11 @@
 import uuid
 import mimetypes
 from datetime import datetime, timezone
-from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, File, Form, UploadFile
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 
+from apps.api_service.app.core.auth import AuthUser, ensure_inspection_access, require_auth_or_internal
 from apps.api_service.app.db.session import get_db
 from apps.api_service.app.db import models
 from apps.api_service.app.schemas.miniapp import DamageDecisionRequest, ManualDamageRequest
@@ -28,12 +28,6 @@ OPTIONAL_PHOTO_STATUS = (
     if hasattr(InspectionStatus, "CAPTURING_OPTIONAL_PHOTOS")
     else "capturing_optional_photos"
 )
-
-
-def _object_url(bucket: str, key: str | None) -> str | None:
-    if not key:
-        return None
-    return f"/api/s3/{bucket}/{quote(key, safe='/')}"
 
 
 def _resolve_image_content_type(filename: str | None, content_type: str | None) -> str:
@@ -60,7 +54,7 @@ def _closeup_payload(image: models.InspectionImage) -> dict:
     return {
         "image_id": str(image.id),
         "slot_code": image.slot_code,
-        "raw_url": _object_url(settings.s3_bucket_closeups, image.object_key_raw),
+        "raw_url": storage_service.presigned_url(settings.s3_bucket_closeups, image.object_key_raw) if image.object_key_raw else None,
         "comment": image.note,
         "created_at": image.created_at,
     }
@@ -111,6 +105,33 @@ def _read_and_validate_closeup_bytes(file_bytes: bytes) -> None:
         raise HTTPException(status_code=400, detail=f"File too large ({len(file_bytes)} bytes, max {max_size})")
 
 
+def _inspection_for_image_or_404(db: Session, image: models.InspectionImage | None) -> models.InspectionSession:
+    if not image:
+        raise HTTPException(status_code=404, detail="image not found")
+    inspection = db.get(models.InspectionSession, image.inspection_session_id)
+    if not inspection:
+        raise HTTPException(status_code=404, detail="inspection not found")
+    return inspection
+
+
+def _inspection_for_review_or_damage_or_404(
+    db: Session,
+    damage_or_review_id: uuid.UUID,
+) -> tuple[models.InspectionSession, models.DamageReview]:
+    review = db.get(models.DamageReview, damage_or_review_id)
+    if not review:
+        review = db.execute(
+            select(models.DamageReview).where(models.DamageReview.predicted_damage_id == damage_or_review_id)
+        ).scalar_one_or_none()
+    if not review:
+        raise HTTPException(status_code=404, detail="review not found")
+
+    inspection = db.get(models.InspectionSession, review.inspection_session_id)
+    if not inspection:
+        raise HTTPException(status_code=404, detail="inspection not found")
+    return inspection, review
+
+
 def _create_closeup_row(
     db: Session,
     *,
@@ -145,10 +166,15 @@ def _create_closeup_row(
     return closeup
 
 @router.get("/inspections/{inspection_id}")
-def get_miniapp_inspection(inspection_id: uuid.UUID, db: Session = Depends(get_db)):
+def get_miniapp_inspection(
+    inspection_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(require_auth_or_internal),
+):
     inspection = db.get(models.InspectionSession, inspection_id)
     if not inspection:
         raise HTTPException(status_code=404, detail="inspection not found")
+    ensure_inspection_access(inspection, current_user)
     _ensure_inspection_open(inspection)
     vehicle = db.get(models.Vehicle, inspection.vehicle_id)
 
@@ -223,8 +249,8 @@ def get_miniapp_inspection(inspection_id: uuid.UUID, db: Session = Depends(get_d
             "image_id": str(img.id),
             "slot_code": img.slot_code,
             "status": img.status,
-            "raw_url": _object_url(settings.s3_bucket_raw_images, img.object_key_raw),
-            "overlay_url": _object_url(settings.s3_bucket_overlays, img.overlay_object_key),
+            "raw_url": storage_service.presigned_url(settings.s3_bucket_raw_images, img.object_key_raw) if img.object_key_raw else None,
+            "overlay_url": storage_service.presigned_url(settings.s3_bucket_overlays, img.overlay_object_key) if img.overlay_object_key else None,
             "predicted_damages": predicted_payload,
             "manual_damages": [
                 {
@@ -254,26 +280,34 @@ def get_miniapp_inspection(inspection_id: uuid.UUID, db: Session = Depends(get_d
         }
     }
 
-def _update_review(damage_or_review_id: uuid.UUID, review_status: str, payload: DamageDecisionRequest, db: Session):
-    review = db.get(models.DamageReview, damage_or_review_id)
-    if not review:
+
+def _update_review(
+    damage_or_review_id: uuid.UUID,
+    review_status: str,
+    payload: DamageDecisionRequest,
+    db: Session,
+    current_user: AuthUser,
+):
+    predicted_damage = db.get(models.PredictedDamage, damage_or_review_id)
+    if predicted_damage:
+        base_image = db.get(models.InspectionImage, predicted_damage.inspection_image_id)
+        inspection = _inspection_for_image_or_404(db, base_image)
+        ensure_inspection_access(inspection, current_user)
         review = db.execute(
             select(models.DamageReview).where(models.DamageReview.predicted_damage_id == damage_or_review_id)
         ).scalar_one_or_none()
-    if not review:
-        predicted_damage = db.get(models.PredictedDamage, damage_or_review_id)
-        if not predicted_damage:
-            raise HTTPException(status_code=404, detail="review not found")
-        base_image = db.get(models.InspectionImage, predicted_damage.inspection_image_id)
-        if not base_image:
-            raise HTTPException(status_code=404, detail="base image not found")
-        review = models.DamageReview(
-            predicted_damage_id=predicted_damage.id,
-            inspection_session_id=base_image.inspection_session_id,
-            review_status=ReviewStatus.PENDING.value,
-        )
-        db.add(review)
-        db.flush()
+        if not review:
+            review = models.DamageReview(
+                predicted_damage_id=predicted_damage.id,
+                inspection_session_id=inspection.id,
+                review_status=ReviewStatus.PENDING.value,
+            )
+            db.add(review)
+            db.flush()
+    else:
+        inspection, review = _inspection_for_review_or_damage_or_404(db, damage_or_review_id)
+        ensure_inspection_access(inspection, current_user)
+
     review.review_status = review_status
     review.severity_hint = payload.severity_hint
     review.review_note = payload.reason or payload.note
@@ -282,33 +316,62 @@ def _update_review(damage_or_review_id: uuid.UUID, review_status: str, payload: 
     return {"data": {"review_id": review.id, "review_status": review.review_status}}
 
 @router.post("/damages/{damage_id}/confirm")
-def confirm_damage(damage_id: uuid.UUID, payload: DamageDecisionRequest, db: Session = Depends(get_db)):
-    return _update_review(damage_id, ReviewStatus.CONFIRMED.value, payload, db)
+def confirm_damage(
+    damage_id: uuid.UUID,
+    payload: DamageDecisionRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(require_auth_or_internal),
+):
+    return _update_review(damage_id, ReviewStatus.CONFIRMED.value, payload, db, current_user)
 
 @router.post("/damages/{damage_id}/reject")
-def reject_damage(damage_id: uuid.UUID, payload: DamageDecisionRequest, db: Session = Depends(get_db)):
-    return _update_review(damage_id, ReviewStatus.REJECTED.value, payload, db)
+def reject_damage(
+    damage_id: uuid.UUID,
+    payload: DamageDecisionRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(require_auth_or_internal),
+):
+    return _update_review(damage_id, ReviewStatus.REJECTED.value, payload, db, current_user)
 
 @router.post("/damages/{damage_id}/uncertain")
-def uncertain_damage(damage_id: uuid.UUID, payload: DamageDecisionRequest, db: Session = Depends(get_db)):
-    return _update_review(damage_id, ReviewStatus.UNCERTAIN.value, payload, db)
+def uncertain_damage(
+    damage_id: uuid.UUID,
+    payload: DamageDecisionRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(require_auth_or_internal),
+):
+    return _update_review(damage_id, ReviewStatus.UNCERTAIN.value, payload, db, current_user)
 
 @router.post("/damages/manual")
-def create_manual_damage(payload: ManualDamageRequest, db: Session = Depends(get_db)):
+def create_manual_damage(
+    payload: ManualDamageRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(require_auth_or_internal),
+):
     inspection = db.get(models.InspectionSession, payload.inspection_session_id)
     if not inspection:
         raise HTTPException(status_code=404, detail="inspection not found")
+    ensure_inspection_access(inspection, current_user)
     _ensure_inspection_open(inspection)
     image = db.get(models.InspectionImage, payload.base_image_id)
     if not image:
         raise HTTPException(status_code=404, detail="image not found")
+    if image.inspection_session_id != inspection.id:
+        raise HTTPException(status_code=400, detail="image does not belong to inspection")
 
-    bbox = payload.bbox_norm
+    bbox = dict(payload.bbox_norm)
     centroid_x = (bbox["x1"] + bbox["x2"]) / 2
     centroid_y = (bbox["y1"] + bbox["y2"]) / 2
     area_norm = abs((bbox["x2"] - bbox["x1"]) * (bbox["y2"] - bbox["y1"]))
 
     user = db.get(models.User, inspection.user_id)
+    if current_user.role == "admin":
+        try:
+            admin_user = db.get(models.User, uuid.UUID(current_user.user_id))
+        except (ValueError, TypeError):
+            admin_user = None
+        if admin_user:
+            user = admin_user
     manual = models.ManualDamage(
         inspection_session_id=inspection.id,
         base_image_id=image.id,
@@ -338,11 +401,15 @@ async def attach_closeup(
     damage_ref_type: str | None = Form(default=None),
     damage_ref_id: str | None = Form(default=None),
     db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(require_auth_or_internal),
 ):
     image = db.get(models.InspectionImage, image_id)
     if not image:
         raise HTTPException(status_code=404, detail="image not found")
     inspection = db.get(models.InspectionSession, image.inspection_session_id)
+    if not inspection:
+        raise HTTPException(status_code=404, detail="inspection not found")
+    ensure_inspection_access(inspection, current_user)
     _ensure_inspection_open(inspection)
     file_bytes = await file.read()
     _read_and_validate_closeup_bytes(file_bytes)
@@ -365,8 +432,14 @@ async def attach_closeup(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="invalid damage_ref_id") from exc
         if damage_ref_type == "predicted_review":
+            review = db.get(models.DamageReview, parsed_ref_id)
+            if not review or review.inspection_session_id != inspection.id:
+                raise HTTPException(status_code=404, detail="review not found")
             review_ref_id = parsed_ref_id
         if damage_ref_type == "manual":
+            manual = db.get(models.ManualDamage, parsed_ref_id)
+            if not manual or manual.inspection_session_id != inspection.id:
+                raise HTTPException(status_code=404, detail="manual damage not found")
             manual_ref_id = parsed_ref_id
 
     key_group = damage_ref_type or "image"
@@ -389,7 +462,7 @@ async def attach_closeup(
         "data": {
             "image_id": closeup.id,
             "status": closeup.status,
-            "raw_url": _object_url(settings.s3_bucket_closeups, closeup.object_key_raw),
+            "raw_url": storage_service.presigned_url(settings.s3_bucket_closeups, closeup.object_key_raw),
             "comment": closeup.note,
         }
     }
@@ -401,10 +474,12 @@ async def attach_extra_photo(
     file: UploadFile = File(...),
     comment: str = Form(...),
     db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(require_auth_or_internal),
 ):
     inspection = db.get(models.InspectionSession, inspection_id)
     if not inspection:
         raise HTTPException(status_code=404, detail="inspection not found")
+    ensure_inspection_access(inspection, current_user)
     _ensure_inspection_open(inspection)
     _ensure_image_extra_photo_allowed(inspection)
 
@@ -429,6 +504,6 @@ async def attach_extra_photo(
         "data": {
             "image_id": closeup.id,
             "status": closeup.status,
-            "raw_url": _object_url(settings.s3_bucket_closeups, closeup.object_key_raw),
+            "raw_url": storage_service.presigned_url(settings.s3_bucket_closeups, closeup.object_key_raw),
         }
     }

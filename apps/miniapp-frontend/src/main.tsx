@@ -1113,6 +1113,12 @@ function humanizeRejectionReason(reason?: string, expectedSlot?: string) {
 }
 
 async function readApiError(response: Response, fallback: string): Promise<string> {
+  if (response.status === 401) {
+    if (tg?.initData) {
+      return "Не удалось подтвердить сессию Telegram. Вернитесь в бот и откройте осмотр заново.";
+    }
+    return "Откройте этот осмотр из Telegram-бота, чтобы пройти авторизацию.";
+  }
   try {
     const body = await response.json();
     const detail = body?.detail;
@@ -1128,6 +1134,8 @@ async function readApiError(response: Response, fallback: string): Promise<strin
 function App() {
   const params = new URLSearchParams(window.location.search);
   const [inspectionId, setInspectionId] = useState(params.get("inspection_id") || "");
+  const [authToken, setAuthToken] = useState<string | null>(null);
+  const [authReady, setAuthReady] = useState(false);
   const [data, setData] = useState<InspectionData | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -1157,10 +1165,50 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (inspectionId) {
+    let cancelled = false;
+
+    async function bootstrapAuth() {
+      if (!tg?.initData) {
+        if (!cancelled) {
+          setAuthReady(true);
+        }
+        return;
+      }
+      try {
+        const response = await fetch(`${API}/auth/telegram`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ init_data: tg.initData }),
+        });
+        if (!response.ok) {
+          throw new Error(await readApiError(response, "Не удалось подтвердить сессию Telegram"));
+        }
+        const json = await response.json();
+        if (!cancelled) {
+          setAuthToken(json.access_token);
+        }
+      } catch (err: any) {
+        if (!cancelled) {
+          setError(err.message || "Не удалось подтвердить сессию Telegram.");
+        }
+      } finally {
+        if (!cancelled) {
+          setAuthReady(true);
+        }
+      }
+    }
+
+    void bootstrapAuth();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (inspectionId && authReady) {
       void loadInspection(inspectionId);
     }
-  }, [inspectionId]);
+  }, [inspectionId, authReady, authToken]);
 
   useEffect(() => {
     localPreviewsRef.current = localPreviews;
@@ -1242,11 +1290,19 @@ function App() {
     }
   }, [manualDrafts, selectedDraftId]);
 
+  async function authorizedFetch(input: string, init: RequestInit = {}) {
+    const headers = new Headers(init.headers || undefined);
+    if (authToken) {
+      headers.set("Authorization", `Bearer ${authToken}`);
+    }
+    return fetch(input, { ...init, headers });
+  }
+
   async function loadInspection(id: string) {
     setLoading(true);
     setError("");
     try {
-      const response = await fetch(`${API}/miniapp/inspections/${id}`);
+      const response = await authorizedFetch(`${API}/miniapp/inspections/${id}`);
       if (!response.ok) {
         let detail: ApiErrorDetail | null = null;
         try {
@@ -1292,7 +1348,7 @@ function App() {
       uploadForm.append("image_type", "required_view");
       uploadForm.append("slot_code", slot);
       uploadForm.append("capture_order", String(SLOT_ORDER.indexOf(slot) + 1));
-      const uploadResponse = await fetch(`${API}/inspections/${data.inspection_id}/images`, {
+      const uploadResponse = await authorizedFetch(`${API}/inspections/${data.inspection_id}/images`, {
         method: "POST",
         body: uploadForm,
       });
@@ -1300,7 +1356,7 @@ function App() {
       const uploadJson = await uploadResponse.json();
       const imageId = uploadJson.data.image_id;
 
-      const checkResponse = await fetch(`${API}/inspections/${data.inspection_id}/run-initial-checks`, {
+      const checkResponse = await authorizedFetch(`${API}/inspections/${data.inspection_id}/run-initial-checks`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ image_id: imageId, expected_slot: slot }),
@@ -1353,7 +1409,7 @@ function App() {
     setPhotosReviewConfirmed(false);
     setError("");
     try {
-      const response = await fetch(`${API}/inspections/${currentInspectionId}/run-damage-inference?force_sync=true`, {
+      const response = await authorizedFetch(`${API}/inspections/${currentInspectionId}/run-damage-inference?force_sync=true`, {
         method: "POST",
       });
       if (!response.ok) throw new Error(await readApiError(response, "Не удалось запустить анализ"));
@@ -1370,7 +1426,7 @@ function App() {
     setBusy(true);
     setError("");
     try {
-      const response = await fetch(`${API}/inspections/${data.inspection_id}/confirm-photo-set`, {
+      const response = await authorizedFetch(`${API}/inspections/${data.inspection_id}/confirm-photo-set`, {
         method: "POST",
       });
       if (!response.ok) throw new Error(await readApiError(response, "Не удалось подтвердить набор фото"));
@@ -1386,7 +1442,7 @@ function App() {
     setBusy(true);
     setError("");
     try {
-      const response = await fetch(`${API}/miniapp/damages/${damageId}/${action}`, {
+      const response = await authorizedFetch(`${API}/miniapp/damages/${damageId}/${action}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
@@ -1427,7 +1483,7 @@ function App() {
     setError("");
     try {
       for (const draft of imageDrafts) {
-        const response = await fetch(`${API}/miniapp/damages/manual`, {
+        const response = await authorizedFetch(`${API}/miniapp/damages/manual`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -1472,7 +1528,7 @@ function App() {
         form.append("damage_ref_type", damageRefType);
         form.append("damage_ref_id", damageRefId);
       }
-      const response = await fetch(`${API}/miniapp/images/${imageId}/attach-closeup`, {
+      const response = await authorizedFetch(`${API}/miniapp/images/${imageId}/attach-closeup`, {
         method: "POST",
         body: form,
       });
@@ -1500,7 +1556,7 @@ function App() {
       const form = new FormData();
       form.append("file", file);
       form.append("comment", comment.trim());
-      const response = await fetch(`${API}/miniapp/inspections/${data.inspection_id}/attach-extra-photo`, {
+      const response = await authorizedFetch(`${API}/miniapp/inspections/${data.inspection_id}/attach-extra-photo`, {
         method: "POST",
         body: form,
       });
@@ -1533,7 +1589,7 @@ function App() {
     setBusy(true);
     setError("");
     try {
-      const response = await fetch(`${API}/inspections/${data.inspection_id}/finalize`, {
+      const response = await authorizedFetch(`${API}/inspections/${data.inspection_id}/finalize`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ photos_review_confirmed: true }),
@@ -1822,7 +1878,8 @@ function App() {
           </div>
         ) : null}
 
-        {loading && !data ? <div className="loading">Загружаем осмотр…</div> : null}
+        {!authReady ? <div className="loading">Подтверждаем сессию Telegram…</div> : null}
+        {loading && !data && authReady ? <div className="loading">Загружаем осмотр…</div> : null}
 
         {data && !captureComplete ? (
           <>
